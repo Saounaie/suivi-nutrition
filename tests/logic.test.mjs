@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour } from '../js/logic.js';
+import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf } from '../js/logic.js';
 
 test('macrosFor : 150 g de poulet à 110 kcal / 23 g prot', () => {
   const m = macrosFor({ kcal: 110, prot: 23 }, 150);
@@ -57,4 +57,21 @@ test('mealOfHour', () => {
   assert.equal(mealOfHour(8), 'petit-dej');
   assert.equal(mealOfHour(12), 'dejeuner');
   assert.equal(mealOfHour(20), 'diner');
+});
+
+test('dayStatus', () => {
+  assert.equal(dayStatus(0, 1900, true), 'empty');
+  assert.equal(dayStatus(1850, 1900, true), 'ok');
+  assert.equal(dayStatus(1000, 1900, false), 'ok');
+  assert.equal(dayStatus(1000, 1900, true), 'low');
+  assert.equal(dayStatus(1950, 1900, false), 'high');
+  assert.equal(dayStatus(2200, 1900, false), 'over');
+});
+
+test('weekOf : lundi à dimanche', () => {
+  const w = weekOf('2026-11-05');
+  assert.equal(w[0], '2026-11-02');
+  assert.equal(w[6], '2026-11-08');
+  assert.equal(weekOf('2026-11-08')[0], '2026-11-02');
+  assert.equal(weekOf('2026-11-02')[0], '2026-11-02');
 });

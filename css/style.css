@@ -41,7 +41,10 @@ button.item { cursor: pointer; }
 .warn { color: var(--warn); }
 .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--soft); color: var(--accent); }
 .pill.warn { background: transparent; border: 1px solid var(--warn); color: var(--warn); }
-button, input, select, textarea { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; font-size: 16px; color: inherit; touch-action: manipulation; }
+html, body, button, a, label, .item, .chip { touch-action: manipulation; }
+input, select, textarea { -webkit-appearance: none; appearance: none; }
+select { background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 18px) 55%, calc(100% - 13px) 55%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
 .btn { min-height: 48px; padding: 0 18px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); font-weight: 600; cursor: pointer; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.danger { color: var(--danger); }
@@ -66,3 +69,26 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .sheet h3 { margin: 0; font-size: 17px; }
 #toast { position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 20px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90%; }
 #toast.show { opacity: 1; }
+
+/* Calendrier de la semaine */
+.week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 14px; }
+.day { min-height: 64px; border-radius: 14px; border: 0; background: transparent; color: var(--muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer; font-size: 13px; }
+.day b { font-size: 18px; color: var(--text); font-weight: 600; }
+.day i { width: 6px; height: 6px; border-radius: 3px; background: transparent; }
+.day[aria-current="date"] { background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
+.day[aria-pressed="true"] { background: var(--card); box-shadow: inset 0 0 0 2px var(--accent); color: var(--text); }
+.day.s-ok i { background: var(--accent); }
+.day.s-low i, .day.s-high i { background: var(--warn); }
+.day.s-over i { background: var(--danger); }
+/* Carte du jour teintée selon l'objectif */
+.card.hero { transition: background .3s; }
+.card.hero.s-ok { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+.card.hero.s-low, .card.hero.s-high { background: color-mix(in srgb, var(--warn) 24%, var(--card)); }
+.card.hero.s-over { background: color-mix(in srgb, var(--danger) 26%, var(--card)); }
+.status { font-size: 13px; margin-top: 2px; }
+.macro { display: flex; flex-direction: column; gap: 4px; }
+.macro .bar { margin: 4px 0; height: 6px; }
+.bar.prot > i { background: #6aa7ff; }
+.bar.fat > i { background: #d8b24a; }
+.bar.carb > i { background: #e08a4a; }
+.bar.fib > i { background: #a58be0; }

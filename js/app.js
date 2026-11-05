@@ -1,6 +1,6 @@
 import {
   MEALS, MACROS, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
-  searchFoods, validateState, uid,
+  searchFoods, validateState, uid, dayStatus, weekOf,
 } from './logic.js';
 import { loadState, saveState, askPersistent } from './store.js';
 
@@ -60,21 +60,33 @@ function renderToday() {
         <button type="button" class="item" data-action="add" data-meal="${m.id}"><span class="warn" style="color:var(--accent)">+ Ajouter</span></button>
       </div>`;
   }).join('');
+  const isPast = date < todayISO();
+  const st = dayStatus(t.kcal, state.settings.kcal, isPast);
+  const stText = { empty: '', ok: 'Dans ton budget', low: 'Un peu bas pour la journée', high: 'Légèrement au-dessus du budget', over: 'Nettement au-dessus du budget' }[st];
+  const dayNames = ['lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.', 'dim.'];
+  const week = weekOf(date).map((iso, i) => {
+    const k = totals(state.entries.filter((e) => e.date === iso)).kcal;
+    const s2 = dayStatus(k, state.settings.kcal, iso < todayISO());
+    return `<button type="button" class="day s-${s2}" data-action="goto" data-date="${iso}" aria-pressed="${iso === date}" ${iso === todayISO() ? 'aria-current="date"' : ''} aria-label="${iso}">${dayNames[i]}<b>${Number(iso.slice(8))}</b><i></i></button>`;
+  }).join('');
+  const protPct = Math.min(100, Math.round((t.prot / state.settings.prot) * 100));
   view.innerHTML = `
     <div class="row between">
-      <button class="icon-btn" data-action="prev" aria-label="Jour précédent">‹</button>
-      <div style="text-align:center"><h1>Journal</h1><div class="muted small">${esc(dateLabel(date))}</div></div>
-      <button class="icon-btn" data-action="next" aria-label="Jour suivant">›</button>
+      <h1>Journal</h1>
+      <button class="icon-btn" data-action="today-btn" ${date === todayISO() ? 'hidden' : ''}>Aujourd'hui</button>
     </div>
-    <div class="card" style="margin-top:16px">
+    <div class="muted small">${esc(dateLabel(date))}</div>
+    <div class="week">${week}</div>
+    <div class="card hero s-${st}" style="margin-top:16px">
       <div class="big">${Math.abs(left)} <span class="small muted" style="font-weight:500">kcal ${left >= 0 ? 'restantes' : 'au-dessus du budget'}</span></div>
       <div class="bar ${left < 0 ? 'over' : ''}"><i style="width:${pct}%"></i></div>
       <div class="small muted">${t.kcal} / ${state.settings.kcal} kcal</div>
+      <div class="status">${stText}</div>
       <div class="macros">
-        <div><span class="small muted">Protéines</span><b>${fmt(t.prot)} g</b><span class="small warn">/ ${state.settings.prot} g</span></div>
-        <div><span class="small muted">Glucides</span><b>${fmt(t.carbs)} g</b></div>
-        <div><span class="small muted">Lipides</span><b>${fmt(t.fat)} g</b></div>
-        <div><span class="small muted">Fibres</span><b>${fmt(t.fiber)} g</b></div>
+        <div class="macro"><span class="small muted">Protéines</span><div class="bar prot"><i style="width:${protPct}%"></i></div><b>${fmt(t.prot)} g</b><span class="small muted">/ ${state.settings.prot} g</span></div>
+        <div class="macro"><span class="small muted">Glucides</span><div class="bar carb"><i style="width:0"></i></div><b>${fmt(t.carbs)} g</b></div>
+        <div class="macro"><span class="small muted">Lipides</span><div class="bar fat"><i style="width:0"></i></div><b>${fmt(t.fat)} g</b></div>
+        <div class="macro"><span class="small muted">Fibres</span><div class="bar fib"><i style="width:0"></i></div><b>${fmt(t.fiber)} g</b></div>
       </div>
     </div>
     ${meals}
@@ -308,8 +320,8 @@ document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]'); if (!el) return;
   const a = el.dataset.action, id = el.dataset.id, meal = el.dataset.meal || mealOfHour(new Date().getHours());
   const actions = {
-    prev: () => { date = shiftDate(date, -1); render(); },
-    next: () => { date = shiftDate(date, 1); render(); },
+    goto: () => { date = el.dataset.date; render(); },
+    'today-btn': () => { date = todayISO(); render(); },
     add: () => sheetAdd(meal),
     close: closeSheet,
     pick: () => sheetQuantity(id, meal),

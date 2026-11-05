@@ -109,3 +109,19 @@ export function validateState(raw) {
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
+
+/** Statut d'une journée : 'empty' | 'ok' | 'low' (trop bas, jour passé) | 'high' (au-dessus) | 'over' (>10 % au-dessus). */
+export function dayStatus(kcal, budget, isPast) {
+  if (!(kcal > 0)) return 'empty';
+  if (kcal > budget * 1.1) return 'over';
+  if (kcal > budget) return 'high';
+  if (isPast && kcal < budget * 0.75) return 'low';
+  return 'ok';
+}
+
+/** Les 7 jours (lundi -> dimanche) de la semaine contenant `iso`. */
+export function weekOf(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dow = (new Date(y, m - 1, d).getDay() + 6) % 7;
+  return Array.from({ length: 7 }, (_, i) => shiftDate(iso, i - dow));
+}
