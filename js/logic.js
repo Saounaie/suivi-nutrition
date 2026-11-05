@@ -200,3 +200,40 @@ export function daysLeft(dlc, today) {
   const t = (iso) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d); };
   return Math.round((t(dlc) - t(today)) / 864e5);
 }
+
+/* ---------- Code-barres et Open Food Facts ---------- */
+
+/** Garde les chiffres ; un UPC-A (12 chiffres) devient un EAN-13 (zéro devant). */
+export function normalizeBarcode(code) {
+  const d = String(code ?? '').replace(/\D/g, '');
+  return d.length === 12 ? '0' + d : d;
+}
+
+export function findByBarcode(foods, code) {
+  const c = normalizeBarcode(code);
+  return c ? foods.find((f) => normalizeBarcode(f.barcode) === c) || null : null;
+}
+
+/** Transforme la réponse de l'API Open Food Facts en fiche pré-remplie. Renvoie null si le produit n'existe pas ou n'a aucune valeur nutritionnelle. */
+export function mapOffProduct(json, code) {
+  const p = json && json.product;
+  if (!json || json.status === 0 || !p) return null;
+  const n = p.nutriments || {};
+  const v = (k) => (n[k] == null || n[k] === '' || !Number.isFinite(Number(n[k])) ? null : Math.round(Number(n[k]) * 10) / 10);
+  let kcal = v('energy-kcal_100g');
+  if (kcal == null && v('energy_100g') != null) kcal = Math.round(v('energy_100g') / 4.184);
+  const per100 = { kcal, prot: v('proteins_100g'), carbs: v('carbohydrates_100g'), sugars: v('sugars_100g'), fat: v('fat_100g'), fiber: v('fiber_100g') };
+  if (MACROS.every((k) => per100[k] == null)) return null;
+  const portions = [];
+  const sq = Number(p.serving_quantity);
+  if (sq > 0) portions.push({ name: 'Portion', grams: sq });
+  const pq = Number(p.product_quantity);
+  if (pq > 0 && pq !== sq) portions.push({ name: 'Paquet', grams: pq });
+  return {
+    name: String(p.product_name_fr || p.product_name || '').trim().slice(0, 120),
+    brand: String(p.brands || '').split(',')[0].trim().slice(0, 80),
+    barcode: normalizeBarcode(code || p.code),
+    per100, portions, source: 'off',
+    note: 'Données Open Food Facts : vérifie avec le paquet.',
+  };
+}

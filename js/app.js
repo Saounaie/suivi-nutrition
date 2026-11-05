@@ -1,9 +1,11 @@
 import {
   MEALS, MACROS, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
   searchFoods, validateState, uid, dayStatus, weekOf, reconcileEntries,
-  ZONES, addStock, deductStock, stockOf, daysLeft,
+  ZONES, addStock, deductStock, stockOf, daysLeft, findByBarcode, normalizeBarcode,
 } from './logic.js';
 import { loadState, saveState, askPersistent } from './store.js';
+import { startScanner } from './scanner.js';
+import { lookupBarcode } from './off.js';
 
 let state;
 let tab = 'today';
@@ -98,7 +100,7 @@ function renderToday() {
 function renderFoods() {
   const foods = searchFoods(state.foods, query);
   view.innerHTML = `
-    <div class="row between"><h1>Aliments</h1><button class="btn primary" data-action="food-new">+ Nouveau</button></div>
+    <div class="row between"><h1>Aliments</h1><div class="row"><button class="btn" data-action="scan" data-mode="catalog">Scanner</button><button class="btn primary" data-action="food-new">+ Nouveau</button></div></div>
     <label style="margin-top:14px">Rechercher<input type="search" id="q" value="${esc(query)}" placeholder="skyr, frites, code-barres…" autocomplete="off"></label>
     <h2>${foods.length} aliment${foods.length > 1 ? 's' : ''}</h2>
     <div class="list">
@@ -196,6 +198,7 @@ function sheetCourses(zone = 'frigo', picked = null) {
   openSheet(`
     <header><h3>Courses</h3><button class="icon-btn" data-action="close">Terminé</button></header>
     <div class="small muted">Choisis un produit, indique la quantité, et enchaîne.</div>
+    <button class="btn primary block" data-action="scan" data-mode="courses" data-zone="${zone}">Scanner un code-barres</button>
     <button class="btn block" data-action="food-new-courses" data-zone="${zone}">+ Nouvel aliment</button>
     <label>Rechercher<input type="search" id="cq" placeholder="skyr, poulet…" autocomplete="off"></label>
     <div class="list" id="clist"></div>`);
@@ -256,12 +259,16 @@ function render() {
 }
 
 /* ---------- Feuilles (dialogues) ---------- */
+let stopScan = null;
+sheet.addEventListener('close', () => { if (stopScan) { stopScan(); stopScan = null; } });
+
 function openSheet(html) { sheet.innerHTML = `<div class="sheet">${html}</div>`; if (!sheet.open) sheet.showModal(); }
 function closeSheet() { if (sheet.open) sheet.close(); }
 
 function sheetAdd(meal) {
   openSheet(`
     <header><h3>Ajouter · ${MEALS.find((m) => m.id === meal).label}</h3><button class="icon-btn" data-action="close">Fermer</button></header>
+    <button class="btn primary block" data-action="scan" data-mode="meal" data-meal="${meal}">Scanner un code-barres</button>
     <div class="grid2">
       <button class="btn" data-action="quick" data-meal="${meal}">Saisie rapide</button>
       <button class="btn" data-action="food-new-from-add" data-meal="${meal}">Nouvel aliment</button>
@@ -360,12 +367,14 @@ function sheetEntryMenu(id) {
   });
 }
 
-function sheetFood(id, afterMeal, afterZone) {
-  const f = id ? foodById(id) : { name: '', brand: '', barcode: '', per100: {}, portions: [], note: '' };
+function sheetFood(id, afterMeal, afterZone, prefill) {
+  const f = id ? foodById(id) : { name: '', brand: '', barcode: '', per100: {}, portions: [], note: '', ...prefill };
   const v = (k) => (f.per100[k] == null ? '' : String(f.per100[k]).replace('.', ','));
   const fields = [['kcal', 'Kcal'], ['prot', 'Protéines (g)'], ['carbs', 'Glucides (g)'], ['sugars', 'dont sucres (g)'], ['fat', 'Lipides (g)'], ['fiber', 'Fibres (g)']];
   openSheet(`
     <header><h3>${id ? 'Fiche aliment' : 'Nouvel aliment'}</h3><button class="icon-btn" data-action="close">Fermer</button></header>
+    ${f.source === 'off' && !id ? '<div class="alert" style="margin:0">Trouvé sur Open Food Facts : compare avec le paquet avant d\'enregistrer. Ces valeurs viennent d\'utilisateurs et peuvent être fausses.</div>' : ''}
+    ${prefill && prefill.notFound ? `<div class="alert" style="margin:0">${esc(prefill.notFound)}</div>` : ''}
     <label>Nom<input type="text" id="fn" value="${esc(f.name)}" autocomplete="off"></label>
     <div class="grid2">
       <label>Marque<input type="text" id="fb" value="${esc(f.brand)}" autocomplete="off"></label>
@@ -392,18 +401,52 @@ function sheetFood(id, afterMeal, afterZone) {
     const barcode = $('#fc').value.replace(/\D/g, '');
     const dup = barcode && state.foods.find((x) => x.barcode === barcode && x.id !== id);
     if (dup) { $('#ferr').textContent = `Ce code-barres est déjà utilisé par « ${dup.name} ».`; return; }
-    const data = { name, brand: $('#fb').value.trim(), barcode, per100, portions, note: $('#fnote').value.trim(), source: 'manual' };
-    let updated = 0;
-    if (id) { Object.assign(f, data); updated = reconcileEntries(state.entries, state.foods); } else state.foods.push({ id: uid(), ...data });
+    const data = { name, brand: $('#fb').value.trim(), barcode, per100, portions, note: $('#fnote').value.trim(), source: f.source === 'off' ? 'off' : 'manual' };
+    let updated = 0, newId = null;
+    if (id) { Object.assign(f, data); updated = reconcileEntries(state.entries, state.foods); } else { newId = uid(); state.foods.push({ id: newId, ...data }); }
     await persist(); closeSheet(); render(); toast(updated ? `Enregistré · ${updated} repas mis à jour` : 'Enregistré');
-    if (afterMeal && !id) sheetAdd(afterMeal);
-    if (afterZone && !id) sheetCourses(afterZone, state.foods[state.foods.length - 1].id);
+    if (afterMeal && newId) sheetQuantity(newId, afterMeal);
+    if (afterZone && newId) sheetCourses(afterZone, newId);
   });
   const del = $('#del');
   if (del) del.addEventListener('click', async () => {
     if (!confirm(`Supprimer « ${f.name} » ? Les repas déjà notés restent dans le journal.`)) return;
     state.foods = state.foods.filter((x) => x.id !== id); await persist(); closeSheet(); render();
   });
+}
+
+
+/* ---------- Scan de code-barres ---------- */
+function sheetScan(mode, meal, zone) {
+  openSheet(`
+    <header><h3>Scanner</h3><button class="icon-btn" data-action="close">Fermer</button></header>
+    <video id="cam" playsinline muted style="width:100%;aspect-ratio:4/3;border-radius:14px;background:#000;object-fit:cover"></video>
+    <div class="small muted" id="scan-msg">Place le code-barres au centre, à 15-20 cm.</div>
+    <div class="row"><input type="text" inputmode="numeric" id="manual" placeholder="ou saisis le code" autocomplete="off"><button class="btn" id="manual-ok">OK</button></div>`);
+  const msg = $('#scan-msg');
+  const go = (code) => handleCode(code, mode, meal, zone);
+  $('#manual-ok').addEventListener('click', () => { const c = normalizeBarcode($('#manual').value); if (c.length >= 8) go(c); else msg.textContent = 'Code trop court (8 à 13 chiffres).'; });
+  startScanner($('#cam'), go).then((stop) => { stopScan = stop; }).catch((e) => { msg.textContent = e.message; });
+}
+
+async function handleCode(raw, mode, meal, zone) {
+  const code = normalizeBarcode(raw);
+  if (stopScan) { stopScan(); stopScan = null; }
+  const local = findByBarcode(state.foods, code);
+  const next = (food) => {
+    if (mode === 'meal') sheetQuantity(food.id, meal);
+    else if (mode === 'courses') sheetCourses(zone, food.id);
+    else sheetFood(food.id);
+  };
+  if (local) { toast(`Déjà dans tes aliments : ${local.name}`); return next(local); }
+  openSheet(`<header><h3>Recherche…</h3></header><div class="muted">Code ${esc(code)} · Open Food Facts</div>`);
+  const r = await lookupBarcode(code);
+  const ctxMeal = mode === 'meal' ? meal : null, ctxZone = mode === 'courses' ? zone : null;
+  if (r.status === 'found') return sheetFood(null, ctxMeal, ctxZone, r.food);
+  const why = r.status === 'error'
+    ? "Open Food Facts n'a pas répondu (hors ligne ?). Tu peux saisir le produit à la main, il sera mémorisé avec son code-barres."
+    : "Produit absent d'Open Food Facts. Saisis-le une fois : il sera mémorisé avec son code-barres.";
+  sheetFood(null, ctxMeal, ctxZone, { barcode: code, notFound: why });
 }
 
 /* ---------- Export / import ---------- */
@@ -447,6 +490,7 @@ document.addEventListener('click', (e) => {
     'food-new-from-add': () => sheetFood(null, meal),
     'food-edit': () => sheetFood(id),
     export: onExport,
+    scan: () => sheetScan(el.dataset.mode, meal, el.dataset.zone || 'frigo'),
     'stock-edit': () => sheetStockItem(id),
     courses: () => sheetCourses(),
     'courses-pick': () => sheetCourses(el.dataset.zone, id),

@@ -5,7 +5,7 @@ Appli perso (PWA pour iPhone) de suivi des calories et macros, avec stock du fri
 ## Étapes
 1. Catalogue d'aliments, journal du jour, budget, thème, export/import (fait)
 2. Frigo : stock, déduction automatique, mode « + Courses » (fait)
-3. Scan de code-barres + Open Food Facts
+3. Scan de code-barres + Open Food Facts (fait, à valider sur iPhone)
 4. Suivi du poids et idées de repas
 
 ## Développement
@@ -14,3 +14,7 @@ Appli perso (PWA pour iPhone) de suivi des calories et macros, avec stock du fri
 - À chaque déploiement, incrémenter `VERSION` dans `sw.js`.
 
 Données produits : [Open Food Facts](https://world.openfoodfacts.org) (licence ODbL).
+
+## Scan
+- Lecteur : [ZXing](https://github.com/zxing-js/library) 0.21.3 (licence dans `vendor/`), car Safari iOS n'a pas `BarcodeDetector`.
+- Un code déjà connu est retrouvé dans le catalogue local, sans appel réseau ; sinon requête Open Food Facts, puis fiche à vérifier avant enregistrement.
