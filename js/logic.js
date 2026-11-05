@@ -118,6 +118,7 @@ export function validateState(raw) {
     kcal: num(s.kcal) || 1900,
     prot: num(s.prot) || 115,
     theme: ['dark', 'light', 'auto'].includes(s.theme) ? s.theme : 'dark',
+    sounds: s.sounds !== false,
   };
   const inRange = (x, lo, hi) => { const n = optNum(x); return n != null && n >= lo && n <= hi ? Math.round(n * 10) / 10 : null; };
   const body = (Array.isArray(raw.body) ? raw.body : [])

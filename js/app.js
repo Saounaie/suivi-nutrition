@@ -9,6 +9,7 @@ import { startScanner } from './scanner.js';
 import { isSeedFood } from './seed.js';
 import { lookupBarcode } from './off.js';
 import { pushSnapshot, validRepo } from './sync.js';
+import { sfx, setSoundEnabled } from './sound.js';
 
 let state;
 let tab = 'today';
@@ -23,9 +24,11 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmt = (n) => (n == null ? '?' : String(Math.round(n * 10) / 10).replace('.', ','));
 const foodById = (id) => state.foods.find((f) => f.id === id);
 
-function toast(msg) {
+function toast(msg, sound = 'success') {
+  if (sound && sfx[sound]) sfx[sound]();
   const t = $('#toast');
-  t.textContent = msg;
+  t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span></span>';
+  t.lastChild.textContent = msg;
   t.classList.add('show');
   clearTimeout(toast.h);
   toast.h = setTimeout(() => t.classList.remove('show'), 2500);
@@ -33,12 +36,13 @@ function toast(msg) {
 
 async function persist() {
   const ok = await saveState(state);
-  if (!ok) toast("Enregistrement impossible : exporte tes données.");
+  if (!ok) toast("Enregistrement impossible : exporte tes données.", 'error');
   scheduleSync();
 }
 
 function applyTheme() {
   document.documentElement.dataset.theme = state.settings.theme;
+  setSoundEnabled(state.settings.sounds !== false);
 }
 
 function dateLabel(iso) {
@@ -53,51 +57,88 @@ function renderToday() {
   const t = totals(entries);
   const left = remaining(state.settings.kcal, entries);
   const pct = Math.min(100, Math.round((t.kcal / state.settings.kcal) * 100));
+  const plusIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+  const chev = '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
   const meals = MEALS.map((m) => {
     const list = entries.filter((e) => e.meal === m.id);
     const mt = totals(list);
     return `
-      <h2>${m.label} · ${mt.kcal} kcal · ${fmt(mt.prot)} g prot</h2>
+      <div class="meal-head"><b>${m.label}</b><span>${list.length ? `${mt.kcal} kcal · ${fmt(mt.prot)} g prot` : ''}</span></div>
       <div class="list">
         ${list.map((e) => `
-          <button type="button" class="item" data-action="entry-menu" data-id="${esc(e.id)}">
+          <button type="button" class="item ${e.id === lastAddedId ? 'new' : ''}" data-action="entry-menu" data-id="${esc(e.id)}">
             <span>${esc(e.label)}<br><span class="sub">${e.grams ? fmt(e.grams) + ' g · ' : ''}${e.kcal} kcal · ${fmt(e.prot)} g prot</span></span>
-            <span class="muted">⋯</span>
-          </button>`).join('') || '<div class="item"><span class="sub">Rien pour l\'instant</span></div>'}
-        <button type="button" class="item" data-action="add" data-meal="${m.id}"><span class="warn" style="color:var(--accent)">+ Ajouter</span></button>
+            ${chev}
+          </button>`).join('')}
+        <button type="button" class="item add-row" data-action="add" data-meal="${m.id}">${plusIcon}<span>${list.length ? 'Ajouter' : 'Ajouter un aliment'}</span></button>
       </div>`;
   }).join('');
   const isPast = date < todayISO();
   const st = dayStatus(t.kcal, state.settings.kcal, isPast);
-  const stText = { empty: '', ok: 'Dans ton budget', low: 'Un peu bas pour la journée', high: 'Légèrement au-dessus du budget', over: 'Nettement au-dessus du budget' }[st];
+  const stText = { empty: 'Journée vide', ok: 'Dans ton budget', low: 'Un peu bas pour la journée', high: 'Légèrement au-dessus', over: 'Nettement au-dessus' }[st];
   const dayNames = ['lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.', 'dim.'];
   const week = weekOf(date).map((iso, i) => {
     const k = totals(state.entries.filter((e) => e.date === iso)).kcal;
     const s2 = dayStatus(k, state.settings.kcal, iso < todayISO());
     return `<button type="button" class="day s-${s2}" data-action="goto" data-date="${iso}" aria-pressed="${iso === date}" ${iso === todayISO() ? 'aria-current="date"' : ''} aria-label="${iso}">${dayNames[i]}<b>${Number(iso.slice(8))}</b><i></i></button>`;
   }).join('');
+  const C = 2 * Math.PI * 52;
+  const ringTarget = C * (1 - Math.min(1, t.kcal / state.settings.kcal));
+  const kcalFromMacros = t.prot * 4 + t.carbs * 4 + t.fat * 9;
+  const share = (g, k) => (kcalFromMacros > 0 ? Math.round(((g * k) / kcalFromMacros) * 100) : 0);
   const protPct = Math.min(100, Math.round((t.prot / state.settings.prot) * 100));
+  const fibPct = Math.min(100, Math.round((t.fiber / 30) * 100));
+  const mrow = (cls, color, name, val, extra, pct) => `<div class="mrow" style="--dot:${color}"><span class="name">${name}</span><span class="val">${val}${extra ? ` <small>${extra}</small>` : ''}</span><div class="bar ${cls}"><i style="width:${pct}%"></i></div></div>`;
   view.innerHTML = `
     <div class="row between">
       <h1>Journal</h1>
       <button class="icon-btn" data-action="today-btn" ${date === todayISO() ? 'hidden' : ''}>Aujourd'hui</button>
     </div>
-    <div class="muted small">${esc(dateLabel(date))}</div>
+    <div class="muted small" style="margin-top:4px">${esc(dateLabel(date))}</div>
     <div class="week">${week}</div>
-    <div class="card hero s-${st}" style="margin-top:16px">
-      <div class="big">${Math.abs(left)} <span class="small muted" style="font-weight:500">kcal ${left >= 0 ? 'restantes' : 'au-dessus du budget'}</span></div>
-      <div class="bar ${left < 0 ? 'over' : ''}"><i style="width:${pct}%"></i></div>
-      <div class="small muted">${t.kcal} / ${state.settings.kcal} kcal</div>
-      <div class="status">${stText}</div>
-      <div class="macros">
-        <div class="macro"><span class="small muted">Protéines</span><div class="bar prot"><i style="width:${protPct}%"></i></div><b>${fmt(t.prot)} g</b><span class="small muted">/ ${state.settings.prot} g</span></div>
-        <div class="macro"><span class="small muted">Glucides</span><div class="bar carb"><i style="width:0"></i></div><b>${fmt(t.carbs)} g</b></div>
-        <div class="macro"><span class="small muted">Lipides</span><div class="bar fat"><i style="width:0"></i></div><b>${fmt(t.fat)} g</b></div>
-        <div class="macro"><span class="small muted">Fibres</span><div class="bar fib"><i style="width:0"></i></div><b>${fmt(t.fiber)} g</b></div>
+    <div class="card hero s-${st}">
+      <div class="hero-top">
+        <div class="ring" role="img" aria-label="${t.kcal} kcal sur ${state.settings.kcal}">
+          <svg viewBox="0 0 120 120"><circle class="ring-bg" cx="60" cy="60" r="52"/><circle class="ring-fg" id="ring" cx="60" cy="60" r="52" stroke-dasharray="${C}" stroke-dashoffset="${C}" data-target="${ringTarget}"/></svg>
+          <div class="ring-num"><span class="big" id="kcal-num" data-to="${Math.abs(left)}">${Math.abs(left)}</span><span class="small muted">${left >= 0 ? 'kcal restantes' : 'au-dessus du budget'}</span></div>
+        </div>
+        <div class="hero-side">
+          <span class="eaten">${t.kcal}</span>
+          <span class="small muted">sur ${state.settings.kcal} kcal</span>
+          <span class="chip-status">${stText}</span>
+        </div>
+      </div>
+      <div class="macro-rows">
+        ${mrow('prot', 'var(--c-prot)', 'Protéines', `${fmt(t.prot)} g`, `/ ${state.settings.prot} g`, protPct)}
+        ${mrow('carb', 'var(--c-carb)', 'Glucides', `${fmt(t.carbs)} g`, `${share(t.carbs, 4)} % des kcal`, share(t.carbs, 4))}
+        ${mrow('fat', 'var(--c-fat)', 'Lipides', `${fmt(t.fat)} g`, `${share(t.fat, 9)} % des kcal`, share(t.fat, 9))}
+        ${mrow('fib', 'var(--c-fib)', 'Fibres', `${fmt(t.fiber)} g`, 'repère 30 g', fibPct)}
       </div>
     </div>
     ${meals}
-    <button class="fab" data-action="add" aria-label="Ajouter un aliment">+</button>`;
+    <button class="fab" data-action="add" aria-label="Ajouter un aliment"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>`;
+  animateHero(left, C, ringTarget);
+}
+
+let lastLeft = null, lastAddedId = null;
+function markNew() { lastAddedId = state.entries[state.entries.length - 1]?.id || null; setTimeout(() => { lastAddedId = null; }, 1600); }
+const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function animateHero(left, C, target) {
+  const ring = $('#ring'), num = $('#kcal-num');
+  if (!ring || !num) return;
+  if (reduceMotion()) { ring.style.strokeDashoffset = target; lastLeft = Math.abs(left); return; }
+  requestAnimationFrame(() => requestAnimationFrame(() => { ring.style.strokeDashoffset = target; }));
+  const from = lastLeft ?? 0, to = Math.abs(left);
+  lastLeft = to;
+  if (from === to) return;
+  const t0 = performance.now(), dur = 900;
+  const tick = (now) => {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    num.textContent = Math.round(from + (to - from) * e);
+    if (k < 1 && document.body.contains(num)) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 /* ---------- Écran Aliments ---------- */
@@ -162,7 +203,7 @@ function ideasHTML() {
   const protLeft = Math.round(state.settings.prot - totals(entries).prot);
   ideas = suggestMeals(state.stock, state.foods, left, protLeft);
   if (!ideas.length) return left < 150 ? '' : '<p class="small muted" style="margin-top:16px">Pas d\'idée de repas : ajoute des aliments avec leurs kcal au stock.</p>';
-  return `<h2>Idées pour tenir ton budget (${left} kcal · ${Math.max(0, protLeft)} g prot restants)</h2>
+  return `<h2>Idées de repas</h2><div class="small muted" style="margin:-2px 6px 4px">Il te reste ${left} kcal et ${Math.max(0, protLeft)} g de protéines aujourd'hui.</div>
     ${ideas.map((m, i) => `<div class="card" style="margin-top:10px">
       <div>${m.items.map((c) => `${esc(c.food.name)} ${fmt(c.grams)} g`).join(' + ')}</div>
       <div class="small muted" style="margin:4px 0 10px">${m.kcal} kcal · ${fmt(m.prot)} g prot</div>
@@ -177,7 +218,7 @@ async function logIdea(i) {
     const d = deductStock(state.stock, c.food.id, c.grams);
     state.entries.push({ id: uid(), date: todayISO(), meal, foodId: c.food.id, label: c.food.name, grams: c.grams, deducted: d.deducted, zone, ...c.m });
   }
-  await persist(); render(); toast('Ajouté au journal · retiré du stock');
+  markNew(); await persist(); render(); toast('Ajouté au journal · retiré du stock');
 }
 
 function sheetStockItem(id) {
@@ -200,7 +241,7 @@ function sheetStockItem(id) {
     if (g === 0) state.stock = state.stock.filter((s) => s.id !== id);
     await persist(); closeSheet(); render();
   });
-  $('#del').addEventListener('click', async () => { state.stock = state.stock.filter((s) => s.id !== id); await persist(); closeSheet(); render(); });
+  $('#del').addEventListener('click', async () => { state.stock = state.stock.filter((s) => s.id !== id); await persist(); closeSheet(); render(); toast('Retiré du stock', 'remove'); });
 }
 
 /** Mode courses : on ajoute les produits un par un sans fermer la feuille. */
@@ -365,12 +406,12 @@ function bindSyncSettings() {
   showSyncInfo();
   $('#sync-save').addEventListener('click', async () => {
     const repo = $('#sync-repo').value.trim(), token = $('#sync-token').value.trim() || cfg?.token || '';
-    if (!validRepo(repo)) { toast('Dépôt invalide : écris-le sous la forme compte/nom'); return; }
-    if (!token) { toast('Colle ton jeton GitHub'); return; }
+    if (!validRepo(repo)) { toast('Dépôt invalide : écris-le sous la forme compte/nom', 'error'); return; }
+    if (!token) { toast('Colle ton jeton GitHub', 'error'); return; }
     ls.set('syncCfg', { repo, token }); $('#sync-token').value = '';
     $('#sync-info').textContent = 'Envoi en cours…';
     const r = await doSync();
-    toast(r?.ok ? 'Synchronisation active' : (r?.message || 'Échec'));
+    toast(r?.ok ? 'Synchronisation active' : (r?.message || 'Échec'), r?.ok ? 'success' : 'error');
     renderSettings();
   });
   $('#sync-off')?.addEventListener('click', () => {
@@ -390,6 +431,12 @@ function renderSettings() {
         <label>Budget (kcal / jour)<input type="number" inputmode="numeric" id="s-kcal" value="${s.kcal}"></label>
         <label>Protéines visées (g)<input type="number" inputmode="numeric" id="s-prot" value="${s.prot}"></label>
       </div>
+      <label>Bruitages
+        <select id="s-sounds">
+          <option value="on" ${s.sounds !== false ? 'selected' : ''}>Activés</option>
+          <option value="off" ${s.sounds === false ? 'selected' : ''}>Désactivés</option>
+        </select>
+      </label>
       <label>Thème
         <select id="s-theme">
           <option value="dark" ${s.theme === 'dark' ? 'selected' : ''}>Sombre</option>
@@ -421,16 +468,19 @@ function renderSettings() {
     if (k > 0) state.settings.kcal = k;
     if (p > 0) state.settings.prot = p;
     state.settings.theme = $('#s-theme').value;
-    applyTheme(); persist();
+    state.settings.sounds = $('#s-sounds').value !== 'off';
+    applyTheme(); persist(); sfx.tap();
   };
-  ['#s-kcal', '#s-prot', '#s-theme'].forEach((id) => $(id).addEventListener('change', save));
+  ['#s-kcal', '#s-prot', '#s-theme', '#s-sounds'].forEach((id) => $(id).addEventListener('change', save));
   $('#import').addEventListener('change', onImport);
   bindSyncSettings();
   const last = localStorage.getItem('lastExport');
   $('#backup-info').textContent = last ? `Dernier export : ${new Date(last).toLocaleDateString('fr-FR')}` : "Aucun export pour l'instant.";
 }
 
-function render() {
+function render(animate = false) {
+  view.classList.remove('enter');
+  if (animate) { void view.offsetWidth; view.classList.add('enter'); }
   document.querySelectorAll('#tabs button').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
   ({ today: renderToday, stock: renderStock, track: renderTrack, foods: renderFoods, settings: renderSettings })[tab]();
 }
@@ -500,7 +550,7 @@ function sheetQuantity(foodId, meal) {
     } else {
       state.entries.push({ id: uid(), date, meal, foodId: f.id, label: f.name, grams: r.g, deducted: null, zone: 'frigo', ...r.m });
     }
-    await persist(); closeSheet(); render(); toast(msg);
+    markNew(); await persist(); closeSheet(); render(); toast(msg);
   });
   upd();
 }
@@ -521,7 +571,7 @@ function sheetQuick(meal, entry) {
     const label = $('#ql').value.trim() || 'Repas';
     if (entry) Object.assign(entry, { label, kcal: k, prot: p ?? 0 });
     else state.entries.push({ id: uid(), date, meal, foodId: null, label, grams: null, kcal: k, prot: p ?? 0, carbs: 0, sugars: 0, fat: 0, fiber: 0 });
-    await persist(); closeSheet(); render(); toast(entry ? 'Modifié' : 'Ajouté');
+    if (!entry) markNew(); await persist(); closeSheet(); render(); toast(entry ? 'Modifié' : 'Ajouté');
   });
 }
 
@@ -540,7 +590,7 @@ function sheetEntryMenu(id) {
     const back = e.deducted > 0 && foodById(e.foodId);
     if (back) addStock(state.stock, { foodId: e.foodId, grams: e.deducted, zone: e.zone || 'frigo' });
     state.entries = state.entries.filter((x) => x.id !== id);
-    await persist(); closeSheet(); render(); toast(back ? `Supprimé · ${fmt(e.deducted)} g remis en stock` : 'Supprimé');
+    await persist(); closeSheet(); render(); toast(back ? `Supprimé · ${fmt(e.deducted)} g remis en stock` : 'Supprimé', 'remove');
   });
 }
 
@@ -588,7 +638,7 @@ function sheetFood(id, afterMeal, afterZone, prefill) {
   const del = $('#del');
   if (del) del.addEventListener('click', async () => {
     if (!confirm(`Supprimer « ${f.name} » ? Les repas déjà notés restent dans le journal.`)) return;
-    state.foods = state.foods.filter((x) => x.id !== id); await persist(); closeSheet(); render();
+    state.foods = state.foods.filter((x) => x.id !== id); await persist(); closeSheet(); render(); toast('Aliment supprimé', 'remove');
   });
 }
 
@@ -615,7 +665,7 @@ async function handleCode(raw, mode, meal, zone) {
     else if (mode === 'courses') sheetCourses(zone, food.id);
     else sheetFood(food.id);
   };
-  if (local) { toast(`Déjà dans tes aliments : ${local.name}`); return next(local); }
+  if (local) { toast(`Déjà dans tes aliments : ${local.name}`, null); return next(local); }
   openSheet(`<header><h3>Recherche…</h3></header><div class="muted">Code ${esc(code)} · Open Food Facts</div>`);
   const r = await lookupBarcode(code);
   const ctxMeal = mode === 'meal' ? meal : null, ctxZone = mode === 'courses' ? zone : null;
@@ -644,19 +694,20 @@ async function onImport(ev) {
     const next = validateState(JSON.parse(await file.text()));
     if (!confirm(`Remplacer toutes tes données par ce fichier (${next.foods.length} aliments, ${next.entries.length} repas) ?`)) return;
     state = next; await persist(); applyTheme(); render(); toast('Import réussi');
-  } catch (e) { toast('Import impossible : ' + e.message); }
+  } catch (e) { toast('Import impossible : ' + e.message, 'error'); }
   ev.target.value = '';
 }
 
 /* ---------- Événements ---------- */
 document.addEventListener('click', (e) => {
   const tabBtn = e.target.closest('#tabs button');
-  if (tabBtn) { tab = tabBtn.dataset.tab; render(); window.scrollTo(0, 0); return; }
+  if (tabBtn) { sfx.tap(); tab = tabBtn.dataset.tab; render(true); window.scrollTo(0, 0); return; }
+  if (e.target.closest('.day, .chip')) sfx.tap();
   const el = e.target.closest('[data-action]'); if (!el) return;
   const a = el.dataset.action, id = el.dataset.id, meal = el.dataset.meal || mealOfHour(new Date().getHours());
   const actions = {
-    goto: () => { date = el.dataset.date; render(); },
-    'today-btn': () => { date = todayISO(); render(); },
+    goto: () => { date = el.dataset.date; render(true); },
+    'today-btn': () => { date = todayISO(); render(true); },
     add: () => sheetAdd(meal),
     close: closeSheet,
     pick: () => sheetQuantity(id, meal),
@@ -667,13 +718,13 @@ document.addEventListener('click', (e) => {
     'food-new-from-add': () => sheetFood(null, meal),
     'food-edit': () => sheetFood(id),
     export: onExport,
-    'body-del': async () => { if (!confirm('Supprimer cette mesure ?')) return; state.body = state.body.filter((b) => b.id !== id); await persist(); render(); },
+    'body-del': async () => { if (!confirm('Supprimer cette mesure ?')) return; state.body = state.body.filter((b) => b.id !== id); await persist(); render(); toast('Mesure supprimée', 'remove'); },
     'idea-add': () => logIdea(Number(el.dataset.i)),
     'clean-seed': async () => {
       const del = seedCleanable();
       if (!del.length || !confirm(`Supprimer ${del.length} aliments d'exemple jamais utilisés ?`)) return;
       state.foods = state.foods.filter((f) => !del.includes(f));
-      await persist(); render(); toast(`${del.length} aliments supprimés`);
+      await persist(); render(); toast(`${del.length} aliments supprimés`, 'remove');
     },
     scan: () => sheetScan(el.dataset.mode, meal, el.dataset.zone || 'frigo'),
     'stock-edit': () => sheetStockItem(id),
@@ -691,11 +742,11 @@ async function init() {
   state = await loadState();
   if (reconcileEntries(state.entries, state.foods)) await persist();
   applyTheme();
-  render();
+  render(true);
   askPersistent();
   if (ls.get('syncDirty')) doSync();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   const last = localStorage.getItem('lastExport');
-  if (state.entries.length > 20 && (!last || Date.now() - new Date(last) > 14 * 864e5)) toast('Pense à exporter tes données (Réglages)');
+  if (state.entries.length > 20 && (!last || Date.now() - new Date(last) > 14 * 864e5)) toast('Pense à exporter tes données (Réglages)', null);
 }
 init();
