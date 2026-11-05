@@ -5,6 +5,7 @@ import {
 } from './logic.js';
 import { loadState, saveState, askPersistent } from './store.js';
 import { startScanner } from './scanner.js';
+import { isSeedFood } from './seed.js';
 import { lookupBarcode } from './off.js';
 
 let state;
@@ -97,11 +98,15 @@ function renderToday() {
 }
 
 /* ---------- Écran Aliments ---------- */
+const seedCleanable = () => state.foods.filter((f) => isSeedFood(f)
+  && !state.entries.some((e) => e.foodId === f.id) && !state.stock.some((x) => x.foodId === f.id));
+
 function renderFoods() {
   const foods = searchFoods(state.foods, query);
   view.innerHTML = `
     <div class="row between"><h1>Aliments</h1><div class="row"><button class="btn" data-action="scan" data-mode="catalog">Scanner</button><button class="btn primary" data-action="food-new">+ Nouveau</button></div></div>
     <label style="margin-top:14px">Rechercher<input type="search" id="q" value="${esc(query)}" placeholder="skyr, frites, code-barres…" autocomplete="off"></label>
+    ${seedCleanable().length ? `<div class="alert"><b>${seedCleanable().length} aliment${seedCleanable().length > 1 ? 's' : ''} d'exemple</b> créé${seedCleanable().length > 1 ? 's' : ''} automatiquement par les premières versions.<br><button class="btn block" style="margin-top:10px" data-action="clean-seed">Les supprimer (ceux que tu n'as jamais utilisés)</button></div>` : ''}
     <h2>${foods.length} aliment${foods.length > 1 ? 's' : ''}</h2>
     <div class="list">
       ${foods.map((f) => `
@@ -490,6 +495,12 @@ document.addEventListener('click', (e) => {
     'food-new-from-add': () => sheetFood(null, meal),
     'food-edit': () => sheetFood(id),
     export: onExport,
+    'clean-seed': async () => {
+      const del = seedCleanable();
+      if (!del.length || !confirm(`Supprimer ${del.length} aliments d'exemple jamais utilisés ?`)) return;
+      state.foods = state.foods.filter((f) => !del.includes(f));
+      await persist(); render(); toast(`${del.length} aliments supprimés`);
+    },
     scan: () => sheetScan(el.dataset.mode, meal, el.dataset.zone || 'frigo'),
     'stock-edit': () => sheetStockItem(id),
     courses: () => sheetCourses(),

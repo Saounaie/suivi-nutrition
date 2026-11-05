@@ -1,6 +1,5 @@
 // Stockage local : tout l'état dans une seule entrée IndexedDB (repli localStorage).
-import { validateState, uid } from './logic.js';
-import { SEED_FOODS } from './seed.js';
+import { validateState } from './logic.js';
 
 const DB = 'suivi-nutrition';
 const KEY = 'state';
@@ -37,7 +36,7 @@ export function freshState() {
   return {
     v: 1,
     settings: { kcal: 1900, prot: 115, theme: 'dark' },
-    foods: SEED_FOODS.map((f) => ({ ...f, id: uid() })),
+    foods: [],
     entries: [],
     stock: [],
   };
