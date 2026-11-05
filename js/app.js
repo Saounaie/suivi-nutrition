@@ -8,7 +8,8 @@ import { loadState, saveState, askPersistent } from './store.js';
 import { startScanner } from './scanner.js';
 import { isSeedFood } from './seed.js';
 import { lookupBarcode } from './off.js';
-import { pushSnapshot, validRepo } from './sync.js';
+import { pushSnapshot, fetchSnapshot, dataSize, validRepo } from './sync.js';
+import { APP_VERSION } from './version.js';
 import { sfx, setSoundEnabled } from './sound.js';
 
 let state;
@@ -408,6 +409,22 @@ function bindSyncSettings() {
     const repo = $('#sync-repo').value.trim(), token = $('#sync-token').value.trim() || cfg?.token || '';
     if (!validRepo(repo)) { toast('Dépôt invalide : écris-le sous la forme compte/nom', 'error'); return; }
     if (!token) { toast('Colle ton jeton GitHub', 'error'); return; }
+    $('#sync-info').textContent = 'Vérification de la copie en ligne…';
+    const remote = await fetchSnapshot({ repo, token });
+    if (!remote.ok) { toast(remote.message, 'error'); $('#sync-info').textContent = remote.message; return; }
+    if (remote.state) {
+      let rs = null;
+      try { rs = validateState(remote.state); } catch (_) { /* fichier illisible : on ne propose pas la restauration */ }
+      if (rs && dataSize(rs) > dataSize(state)) {
+        const msg = `La copie en ligne contient ${rs.foods.length} aliments, ${rs.entries.length} repas, ${rs.stock.length} lignes de stock et ${rs.body.length} mesures, contre ${state.foods.length} / ${state.entries.length} / ${state.stock.length} / ${state.body.length} sur cet appareil.\n\nOK = restaurer la copie en ligne sur cet appareil.\nAnnuler = ne pas restaurer.`;
+        if (confirm(msg)) {
+          state = rs; await saveState(state); applyTheme();
+          ls.set('syncCfg', { repo, token }); $('#sync-token').value = '';
+          const r2 = await doSync(); toast('Données restaurées', 'success'); renderSettings(); return r2;
+        }
+        if (!confirm("Remplacer la copie en ligne par les données de cet appareil ? Les données de la copie seront écrasées.")) { $('#sync-info').textContent = 'Synchronisation non activée.'; return; }
+      }
+    }
     ls.set('syncCfg', { repo, token }); $('#sync-token').value = '';
     $('#sync-info').textContent = 'Envoi en cours…';
     const r = await doSync();
@@ -461,6 +478,12 @@ function renderSettings() {
       <div class="small" id="sync-info"></div>
       ${ls.get('syncCfg')?.token ? '<button class="btn danger block" id="sync-off">Désactiver et effacer le jeton</button>' : ''}
     </div>
+    <h2>Application</h2>
+    <div class="card stack">
+      <div class="row between"><span>Version</span><b>${APP_VERSION}</b></div>
+      <button class="btn block" id="update-now">Mettre à jour maintenant</button>
+      <p class="small muted" style="margin:0">Cherche la dernière version sans toucher à tes données. <b>Ne supprime jamais l'icône de l'écran d'accueil</b> : ça efface toutes tes données et ta synchronisation.</p>
+    </div>
     <h2>À propos</h2>
     <div class="card small muted">Valeurs nutritionnelles saisies à la main. Données Open Food Facts (licence ODbL) à venir à l'étape 3.</div>`;
   const save = () => {
@@ -474,6 +497,7 @@ function renderSettings() {
   ['#s-kcal', '#s-prot', '#s-theme', '#s-sounds'].forEach((id) => $(id).addEventListener('change', save));
   $('#import').addEventListener('change', onImport);
   bindSyncSettings();
+  $('#update-now').addEventListener('click', forceUpdate);
   const last = localStorage.getItem('lastExport');
   $('#backup-info').textContent = last ? `Dernier export : ${new Date(last).toLocaleDateString('fr-FR')}` : "Aucun export pour l'instant.";
 }
@@ -736,6 +760,31 @@ document.addEventListener('click', (e) => {
   actions[a]?.();
 });
 
+
+/* ---------- Mises à jour (les données ne sont jamais touchées) ---------- */
+async function forceUpdate() {
+  toast('Recherche de la dernière version…', null);
+  try {
+    const regs = await navigator.serviceWorker?.getRegistrations?.() || [];
+    await Promise.all(regs.map((r) => r.unregister()));
+    if (window.caches) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+  } catch (_) { /* on recharge quand même */ }
+  location.reload();
+}
+
+function watchUpdates() {
+  if (!('serviceWorker' in navigator)) return;
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloadWanted = false;
+  const reload = () => { if (sheet.open) reloadWanted = true; else location.reload(); };
+  sheet.addEventListener('close', () => { if (reloadWanted) location.reload(); });
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) reload(); });
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    reg.update().catch(() => {});
+  }).catch(() => {});
+}
+
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && ls.get('syncDirty')) doSync(); });
 
 async function init() {
@@ -745,7 +794,7 @@ async function init() {
   render(true);
   askPersistent();
   if (ls.get('syncDirty')) doSync();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  watchUpdates();
   const last = localStorage.getItem('lastExport');
   if (state.entries.length > 20 && (!last || Date.now() - new Date(last) > 14 * 864e5)) toast('Pense à exporter tes données (Réglages)', null);
 }

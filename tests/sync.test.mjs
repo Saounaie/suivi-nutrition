@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeB64, validRepo, pushSnapshot } from '../js/sync.js';
+import { encodeB64, validRepo, pushSnapshot, fetchSnapshot, dataSize } from '../js/sync.js';
 
 const cfg = { repo: 'Saounaie/data', token: 'ghp_x' };
 const res = (status, json = {}) => ({ status, ok: status >= 200 && status < 300, json: async () => json });
@@ -48,4 +48,18 @@ test('pushSnapshot : erreurs lisibles', async () => {
   assert.equal((await pushSnapshot(cfg, {}, async () => res(404))).code, 'notfound');
   assert.equal((await pushSnapshot(cfg, {}, async () => res(500))).code, 'other');
   assert.equal((await pushSnapshot(cfg, {}, async () => { throw new Error('offline'); })).code, 'network');
+});
+
+test('fetchSnapshot : fichier, absence, erreurs', async () => {
+  const ok = await fetchSnapshot(cfg, async (u, o) => { assert.match(o.headers.Accept, /raw/); return { status: 200, ok: true, text: async () => '{"v":1,"foods":[1]}' }; });
+  assert.deepEqual(ok, { ok: true, state: { v: 1, foods: [1] } });
+  assert.deepEqual(await fetchSnapshot(cfg, async () => res(404)), { ok: true, empty: true });
+  assert.equal((await fetchSnapshot(cfg, async () => res(401))).code, 'auth');
+  assert.equal((await fetchSnapshot(cfg, async () => { throw new Error('x'); })).code, 'network');
+});
+
+test('dataSize', () => {
+  assert.equal(dataSize({ foods: [1, 2], entries: [1], stock: [], body: [1] }), 4);
+  assert.equal(dataSize(null), 0);
+  assert.equal(dataSize({}), 0);
 });

@@ -36,3 +36,26 @@ export async function pushSnapshot(cfg, state, fetchFn = fetch, shaHint = null, 
     return { ok: false, code: 'network', message: 'Pas de connexion pour le moment : nouvel essai au prochain changement.' };
   }
 }
+
+/**
+ * Lit la copie en ligne. Renvoie { ok:true, state } | { ok:true, empty:true } (aucun fichier) | { ok:false, code, message }.
+ * `state` est brut : à passer dans validateState avant usage.
+ */
+export async function fetchSnapshot(cfg, fetchFn = fetch) {
+  const url = `https://api.github.com/repos/${cfg.repo.trim()}/contents/data.json`;
+  const headers = { Authorization: `Bearer ${cfg.token.trim()}`, Accept: 'application/vnd.github.raw+json', 'X-GitHub-Api-Version': '2022-11-28' };
+  try {
+    const r = await fetchFn(url, { headers });
+    if (r.status === 404) return { ok: true, empty: true };
+    if (r.status === 401 || r.status === 403) return { ok: false, code: 'auth', message: 'Jeton refusé ou expiré, ou droit « Contents » manquant.' };
+    if (!r.ok) return { ok: false, code: 'other', message: `GitHub a répondu ${r.status}.` };
+    return { ok: true, state: JSON.parse(await r.text()) };
+  } catch (e) {
+    return { ok: false, code: 'network', message: 'Pas de connexion pour le moment.' };
+  }
+}
+
+/** Nombre d'éléments de données d'un état (pour comparer deux copies). */
+export function dataSize(st) {
+  return ['foods', 'entries', 'stock', 'body'].reduce((n, k) => n + (Array.isArray(st?.[k]) ? st[k].length : 0), 0);
+}

@@ -11,7 +11,7 @@ Appli perso (PWA pour iPhone) de suivi des calories et macros, avec stock du fri
 ## Développement
 - `npm test` : tests de la logique (`js/logic.js`), sans dépendance.
 - Pas d'étape de build : ouvrir `index.html` via un petit serveur statique (`python3 -m http.server`).
-- À chaque déploiement, incrémenter `VERSION` dans `sw.js`.
+- À chaque déploiement, incrémenter `VERSION` dans `sw.js` ET `APP_VERSION` dans `js/version.js`.
 
 Données produits : [Open Food Facts](https://world.openfoodfacts.org) (licence ODbL).
 
