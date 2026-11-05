@@ -7,6 +7,12 @@ export const MEALS = [
   { id: 'collation', label: 'Collations' },
 ];
 
+export const ZONES = [
+  { id: 'frigo', label: 'Frigo' },
+  { id: 'congel', label: 'Congélateur' },
+  { id: 'placard', label: 'Placard' },
+];
+
 export const MACROS = ['kcal', 'prot', 'carbs', 'sugars', 'fat', 'fiber'];
 
 const round1 = (n) => Math.round(n * 10) / 10;
@@ -95,15 +101,25 @@ export function validateState(raw) {
     foodId: e.foodId ? str(e.foodId, 60) : null,
     label: str(e.label),
     grams: optNum(e.grams),
+    deducted: optNum(e.deducted),
+    zone: ZONES.some((z) => z.id === e.zone) ? e.zone : 'frigo',
     ...Object.fromEntries(MACROS.map((k) => [k, num(e[k])])),
   }));
+  const foodIds = new Set(foods.map((f) => f.id));
+  const stock = (Array.isArray(raw.stock) ? raw.stock : [])
+    .map((x) => ({
+      id: str(x.id, 60), foodId: str(x.foodId, 60), grams: Math.max(0, num(x.grams)),
+      zone: ZONES.some((z) => z.id === x.zone) ? x.zone : 'frigo',
+      dlc: /^\d{4}-\d{2}-\d{2}$/.test(x.dlc) ? x.dlc : null,
+    }))
+    .filter((x) => foodIds.has(x.foodId) && x.grams > 0);
   const s = raw.settings || {};
   const settings = {
     kcal: num(s.kcal) || 1900,
     prot: num(s.prot) || 115,
     theme: ['dark', 'light', 'auto'].includes(s.theme) ? s.theme : 'dark',
   };
-  return { v: 1, settings, foods, entries };
+  return { v: 1, settings, foods, entries, stock };
 }
 
 export function uid() {
@@ -140,4 +156,47 @@ export function reconcileEntries(entries, foods) {
     if (diff) changed++;
   }
   return changed;
+}
+
+/* ---------- Stock (frigo) ---------- */
+const ZONE_RANK = { frigo: 0, placard: 1, congel: 2 };
+
+/** Ajoute du stock (g). Fusionne avec la ligne existante du même aliment et de la même zone ; garde la DLC la plus proche. */
+export function addStock(stock, { foodId, grams, zone = 'frigo', dlc = null }) {
+  const ex = stock.find((x) => x.foodId === foodId && x.zone === zone);
+  if (ex) {
+    ex.grams = round1(ex.grams + grams);
+    if (dlc && (!ex.dlc || dlc < ex.dlc)) ex.dlc = dlc;
+    return ex;
+  }
+  const item = { id: uid(), foodId, grams: round1(grams), zone, dlc: dlc || null };
+  stock.push(item);
+  return item;
+}
+
+export function stockOf(stock, foodId) {
+  return round1(stock.filter((x) => x.foodId === foodId).reduce((a, x) => a + x.grams, 0));
+}
+
+/** Retire `grams` du stock d'un aliment : frigo puis placard puis congélateur, DLC la plus proche d'abord. Supprime les lignes vides. Renvoie { deducted, short }. */
+export function deductStock(stock, foodId, grams) {
+  let left = grams;
+  const items = stock
+    .filter((x) => x.foodId === foodId)
+    .sort((a, b) => ZONE_RANK[a.zone] - ZONE_RANK[b.zone] || (a.dlc || '9999').localeCompare(b.dlc || '9999'));
+  for (const it of items) {
+    if (left <= 0) break;
+    const take = Math.min(it.grams, left);
+    it.grams = round1(it.grams - take);
+    left = round1(left - take);
+  }
+  for (let i = stock.length - 1; i >= 0; i--) if (stock[i].grams <= 0) stock.splice(i, 1);
+  return { deducted: round1(grams - left), short: left };
+}
+
+/** Jours restants avant la DLC (négatif si dépassée), null sans DLC. */
+export function daysLeft(dlc, today) {
+  if (!dlc) return null;
+  const t = (iso) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+  return Math.round((t(dlc) - t(today)) / 864e5);
 }

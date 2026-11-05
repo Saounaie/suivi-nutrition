@@ -1,6 +1,7 @@
 import {
   MEALS, MACROS, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
   searchFoods, validateState, uid, dayStatus, weekOf, reconcileEntries,
+  ZONES, addStock, deductStock, stockOf, daysLeft,
 } from './logic.js';
 import { loadState, saveState, askPersistent } from './store.js';
 
@@ -112,6 +113,102 @@ function renderFoods() {
   q.addEventListener('input', () => { query = q.value; const pos = q.selectionStart; renderFoods(); const n = $('#q'); n.focus(); n.setSelectionRange(pos, pos); });
 }
 
+
+/* ---------- Écran Frigo ---------- */
+function dlcPill(dlc) {
+  const d = daysLeft(dlc, todayISO());
+  if (d == null) return '';
+  if (d < 0) return '<span class="pill red">DLC dépassée</span>';
+  if (d <= 2) return `<span class="pill warn">DLC ${d === 0 ? "aujourd'hui" : 'dans ' + d + ' j'}</span>`;
+  return `<span class="pill">DLC ${new Date(dlc + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}</span>`;
+}
+
+function renderStock() {
+  const items = state.stock.map((x) => ({ ...x, food: foodById(x.foodId) })).filter((x) => x.food);
+  const soon = items.filter((x) => { const d = daysLeft(x.dlc, todayISO()); return d != null && d <= 2; })
+    .sort((a, b) => a.dlc.localeCompare(b.dlc));
+  const zones = ZONES.map((z) => {
+    const list = items.filter((x) => x.zone === z.id).sort((a, b) => a.food.name.localeCompare(b.food.name, 'fr'));
+    if (!list.length) return '';
+    return `<h2>${z.label}</h2><div class="list">${list.map((x) => `
+      <button type="button" class="item" data-action="stock-edit" data-id="${esc(x.id)}">
+        <span>${esc(x.food.name)}<br><span class="sub">${fmt(x.grams)} g${x.food.per100.kcal != null ? ' · ' + Math.round(x.food.per100.kcal * x.grams / 100) + ' kcal en stock' : ''}</span></span>
+        ${dlcPill(x.dlc)}
+      </button>`).join('')}</div>`;
+  }).join('');
+  view.innerHTML = `
+    <div class="row between"><h1>Frigo</h1><button class="btn primary" data-action="courses">+ Courses</button></div>
+    ${soon.length ? `<div class="alert ${soon.some((x) => daysLeft(x.dlc, todayISO()) < 0) ? 'red' : ''}">À consommer vite : ${soon.map((x) => esc(x.food.name)).join(', ')}</div>` : ''}
+    ${zones || '<div class="card muted" style="margin-top:16px">Ton stock est vide. Touche « + Courses » pour ajouter ce que tu viens d\'acheter.</div>'}
+    <p class="small muted" style="margin-top:18px">Quand tu ajoutes un repas, la quantité est retirée du stock automatiquement (frigo d'abord, puis placard et congélateur).</p>`;
+}
+
+function sheetStockItem(id) {
+  const x = state.stock.find((s) => s.id === id); if (!x) return;
+  const f = foodById(x.foodId);
+  openSheet(`
+    <header><h3>${esc(f.name)}</h3><button class="icon-btn" data-action="close">Fermer</button></header>
+    <div class="grid2">
+      <label>Quantité restante (g)<input type="text" inputmode="decimal" id="sg" value="${String(x.grams).replace('.', ',')}"></label>
+      <label>Emplacement<select id="sz">${ZONES.map((z) => `<option value="${z.id}" ${z.id === x.zone ? 'selected' : ''}>${z.label}</option>`).join('')}</select></label>
+    </div>
+    <label>DLC (facultatif)<input type="date" id="sd" value="${x.dlc || ''}"></label>
+    <div id="serr" class="small" style="color:var(--danger)"></div>
+    <button class="btn primary block" id="save">Enregistrer</button>
+    <button class="btn danger block" id="del">Retirer du stock</button>`);
+  $('#save').addEventListener('click', async () => {
+    const g = parseNumber($('#sg').value);
+    if (!(g >= 0)) { $('#serr').textContent = 'Quantité invalide.'; return; }
+    x.grams = g; x.zone = $('#sz').value; x.dlc = $('#sd').value || null;
+    if (g === 0) state.stock = state.stock.filter((s) => s.id !== id);
+    await persist(); closeSheet(); render();
+  });
+  $('#del').addEventListener('click', async () => { state.stock = state.stock.filter((s) => s.id !== id); await persist(); closeSheet(); render(); });
+}
+
+/** Mode courses : on ajoute les produits un par un sans fermer la feuille. */
+function sheetCourses(zone = 'frigo', picked = null) {
+  if (picked) {
+    const f = foodById(picked);
+    const presets = [...f.portions.map((p) => p.grams), 250, 500, 1000, 2500].filter((v, i, a) => a.indexOf(v) === i).slice(0, 6);
+    openSheet(`
+      <header><h3>${esc(f.name)}</h3><button class="icon-btn" data-action="courses-back" data-zone="${zone}">Retour</button></header>
+      <div class="small muted">En stock : ${fmt(stockOf(state.stock, f.id))} g</div>
+      <label>Quantité achetée (g)<input type="text" inputmode="decimal" id="cg" value="" placeholder="ex. 2500" autocomplete="off"></label>
+      <div class="chips">${presets.map((v) => `<button type="button" class="chip" data-g="${v}">${fmt(v)} g</button>`).join('')}</div>
+      <div class="grid2">
+        <label>Emplacement<select id="cz">${ZONES.map((z) => `<option value="${z.id}" ${z.id === zone ? 'selected' : ''}>${z.label}</option>`).join('')}</select></label>
+        <label>DLC (facultatif)<input type="date" id="cd"></label>
+      </div>
+      <div id="cerr" class="small" style="color:var(--danger)"></div>
+      <button class="btn primary block" id="confirm">Ajouter au stock</button>`);
+    document.querySelectorAll('.chip[data-g]').forEach((c) => c.addEventListener('click', () => { $('#cg').value = c.dataset.g; }));
+    $('#confirm').addEventListener('click', async () => {
+      const g = parseNumber($('#cg').value);
+      if (!(g > 0)) { $('#cerr').textContent = 'Indique une quantité en grammes.'; return; }
+      const z = $('#cz').value;
+      addStock(state.stock, { foodId: f.id, grams: g, zone: z, dlc: $('#cd').value || null });
+      await persist(); render(); toast(`Ajouté : ${f.name} ${fmt(g)} g`);
+      sheetCourses(z);
+    });
+    return;
+  }
+  openSheet(`
+    <header><h3>Courses</h3><button class="icon-btn" data-action="close">Terminé</button></header>
+    <div class="small muted">Choisis un produit, indique la quantité, et enchaîne.</div>
+    <button class="btn block" data-action="food-new-courses" data-zone="${zone}">+ Nouvel aliment</button>
+    <label>Rechercher<input type="search" id="cq" placeholder="skyr, poulet…" autocomplete="off"></label>
+    <div class="list" id="clist"></div>`);
+  const input = $('#cq'), list = $('#clist');
+  const draw = () => {
+    list.innerHTML = searchFoods(state.foods, input.value).map((f) => `
+      <button type="button" class="item" data-action="courses-pick" data-id="${esc(f.id)}" data-zone="${zone}">
+        <span>${esc(f.name)}<br><span class="sub">${fmt(stockOf(state.stock, f.id))} g en stock</span></span>
+      </button>`).join('') || '<div class="item"><span class="sub">Aucun résultat</span></div>';
+  };
+  input.addEventListener('input', draw); draw();
+}
+
 /* ---------- Réglages ---------- */
 function renderSettings() {
   const s = state.settings;
@@ -155,7 +252,7 @@ function renderSettings() {
 
 function render() {
   document.querySelectorAll('#tabs button').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
-  ({ today: renderToday, foods: renderFoods, settings: renderSettings })[tab]();
+  ({ today: renderToday, stock: renderStock, foods: renderFoods, settings: renderSettings })[tab]();
 }
 
 /* ---------- Feuilles (dialogues) ---------- */
@@ -185,6 +282,7 @@ function sheetAdd(meal) {
 function sheetQuantity(foodId, meal) {
   const f = foodById(foodId);
   const portions = f.portions.length ? f.portions : [];
+  const inStock = stockOf(state.stock, f.id);
   openSheet(`
     <header><h3>${esc(f.name)}</h3><button class="icon-btn" data-action="close">Fermer</button></header>
     ${f.per100.kcal == null ? '<div class="small warn">Les kcal de cet aliment ne sont pas renseignées : complète sa fiche pour un total juste.</div>' : ''}
@@ -193,6 +291,7 @@ function sheetQuantity(foodId, meal) {
     </div>
     <label>Quantité (g)<input type="text" inputmode="decimal" id="qty" value="${portions[0] ? portions[0].grams : 100}" autocomplete="off"></label>
     <div class="row between"><b id="preview"></b></div>
+    ${inStock > 0 ? `<label style="flex-direction:row;align-items:center;gap:10px;color:var(--text);font-size:15px"><input type="checkbox" id="ded" checked style="width:22px;min-height:22px">Retirer du stock <span class="muted">(${fmt(inStock)} g disponibles)</span></label>` : ''}
     <button class="btn primary block" id="confirm">Ajouter</button>`);
   const qty = $('#qty'), prev = $('#preview');
   const upd = () => {
@@ -207,8 +306,17 @@ function sheetQuantity(foodId, meal) {
   $('#portions').addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (c) { qty.value = c.dataset.grams; upd(); } });
   $('#confirm').addEventListener('click', async () => {
     const r = upd(); if (!r) return;
-    state.entries.push({ id: uid(), date, meal, foodId: f.id, label: f.name, grams: r.g, ...r.m });
-    await persist(); closeSheet(); render(); toast('Ajouté');
+    let deducted = null, msg = 'Ajouté';
+    if ($('#ded')?.checked) {
+      const zone = state.stock.filter((x) => x.foodId === f.id).sort((a, b) => ({ frigo: 0, placard: 1, congel: 2 })[a.zone] - ({ frigo: 0, placard: 1, congel: 2 })[b.zone])[0]?.zone || 'frigo';
+      const d = deductStock(state.stock, f.id, r.g);
+      deducted = d.deducted;
+      msg = d.short > 0 ? `Ajouté · stock insuffisant (il manquait ${fmt(d.short)} g)` : 'Ajouté · retiré du stock';
+      state.entries.push({ id: uid(), date, meal, foodId: f.id, label: f.name, grams: r.g, deducted, zone, ...r.m });
+    } else {
+      state.entries.push({ id: uid(), date, meal, foodId: f.id, label: f.name, grams: r.g, deducted: null, zone: 'frigo', ...r.m });
+    }
+    await persist(); closeSheet(); render(); toast(msg);
   });
   upd();
 }
@@ -244,10 +352,15 @@ function sheetEntryMenu(id) {
     ${e.foodId ? '' : '<button class="btn block" data-action="quick-edit" data-id="' + esc(e.id) + '">Modifier</button>'}
     <button class="btn danger block" id="del">Supprimer</button>`);
   $('#mv').addEventListener('change', async () => { e.meal = $('#mv').value; await persist(); closeSheet(); render(); });
-  $('#del').addEventListener('click', async () => { state.entries = state.entries.filter((x) => x.id !== id); await persist(); closeSheet(); render(); toast('Supprimé'); });
+  $('#del').addEventListener('click', async () => {
+    const back = e.deducted > 0 && foodById(e.foodId);
+    if (back) addStock(state.stock, { foodId: e.foodId, grams: e.deducted, zone: e.zone || 'frigo' });
+    state.entries = state.entries.filter((x) => x.id !== id);
+    await persist(); closeSheet(); render(); toast(back ? `Supprimé · ${fmt(e.deducted)} g remis en stock` : 'Supprimé');
+  });
 }
 
-function sheetFood(id, afterMeal) {
+function sheetFood(id, afterMeal, afterZone) {
   const f = id ? foodById(id) : { name: '', brand: '', barcode: '', per100: {}, portions: [], note: '' };
   const v = (k) => (f.per100[k] == null ? '' : String(f.per100[k]).replace('.', ','));
   const fields = [['kcal', 'Kcal'], ['prot', 'Protéines (g)'], ['carbs', 'Glucides (g)'], ['sugars', 'dont sucres (g)'], ['fat', 'Lipides (g)'], ['fiber', 'Fibres (g)']];
@@ -284,6 +397,7 @@ function sheetFood(id, afterMeal) {
     if (id) { Object.assign(f, data); updated = reconcileEntries(state.entries, state.foods); } else state.foods.push({ id: uid(), ...data });
     await persist(); closeSheet(); render(); toast(updated ? `Enregistré · ${updated} repas mis à jour` : 'Enregistré');
     if (afterMeal && !id) sheetAdd(afterMeal);
+    if (afterZone && !id) sheetCourses(afterZone, state.foods[state.foods.length - 1].id);
   });
   const del = $('#del');
   if (del) del.addEventListener('click', async () => {
@@ -333,6 +447,11 @@ document.addEventListener('click', (e) => {
     'food-new-from-add': () => sheetFood(null, meal),
     'food-edit': () => sheetFood(id),
     export: onExport,
+    'stock-edit': () => sheetStockItem(id),
+    courses: () => sheetCourses(),
+    'courses-pick': () => sheetCourses(el.dataset.zone, id),
+    'courses-back': () => sheetCourses(el.dataset.zone),
+    'food-new-courses': () => sheetFood(null, null, el.dataset.zone),
   };
   actions[a]?.();
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf, reconcileEntries } from '../js/logic.js';
+import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf, reconcileEntries, addStock, deductStock, stockOf, daysLeft } from '../js/logic.js';
 
 test('macrosFor : 150 g de poulet à 110 kcal / 23 g prot', () => {
   const m = macrosFor({ kcal: 110, prot: 23 }, 150);
@@ -88,4 +88,43 @@ test('reconcileEntries : la modification d\'un aliment met à jour ses repas', (
   assert.equal(entries[1].kcal, 600);
   assert.equal(entries[2].kcal, 80);
   assert.equal(reconcileEntries(entries, foods), 0);
+});
+
+test('addStock fusionne par aliment et zone, garde la DLC la plus proche', () => {
+  const st = [];
+  addStock(st, { foodId: 'a', grams: 500, zone: 'frigo', dlc: '2026-11-10' });
+  addStock(st, { foodId: 'a', grams: 250, zone: 'frigo', dlc: '2026-11-08' });
+  addStock(st, { foodId: 'a', grams: 1000, zone: 'congel' });
+  assert.equal(st.length, 2);
+  assert.equal(st[0].grams, 750);
+  assert.equal(st[0].dlc, '2026-11-08');
+  assert.equal(stockOf(st, 'a'), 1750);
+});
+
+test('deductStock : frigo avant congélateur, supprime les lignes vides, signale le manque', () => {
+  const st = [];
+  addStock(st, { foodId: 'a', grams: 100, zone: 'congel' });
+  addStock(st, { foodId: 'a', grams: 150, zone: 'frigo' });
+  let r = deductStock(st, 'a', 200);
+  assert.deepEqual(r, { deducted: 200, short: 0 });
+  assert.equal(st.find((x) => x.zone === 'frigo'), undefined);
+  assert.equal(st[0].grams, 50);
+  r = deductStock(st, 'a', 80);
+  assert.deepEqual(r, { deducted: 50, short: 30 });
+  assert.equal(st.length, 0);
+  assert.deepEqual(deductStock(st, 'zzz', 10), { deducted: 0, short: 10 });
+});
+
+test('daysLeft', () => {
+  assert.equal(daysLeft('2026-11-07', '2026-11-05'), 2);
+  assert.equal(daysLeft('2026-11-04', '2026-11-05'), -1);
+  assert.equal(daysLeft(null, '2026-11-05'), null);
+});
+
+test('validateState garde le stock valide et écarte les lignes orphelines', () => {
+  const s = validateState({ v: 1, foods: [{ id: 'a', name: 'X' }], entries: [], stock: [{ id: '1', foodId: 'a', grams: 300, zone: 'bizarre', dlc: 'x' }, { id: '2', foodId: 'inconnu', grams: 10 }, { id: '3', foodId: 'a', grams: 0 }] });
+  assert.equal(s.stock.length, 1);
+  assert.equal(s.stock[0].zone, 'frigo');
+  assert.equal(s.stock[0].dlc, null);
+  assert.equal(validateState({ v: 1, foods: [], entries: [] }).stock.length, 0);
 });

@@ -39,6 +39,7 @@ export function freshState() {
     settings: { kcal: 1900, prot: 115, theme: 'dark' },
     foods: SEED_FOODS.map((f) => ({ ...f, id: uid() })),
     entries: [],
+    stock: [],
   };
 }
 

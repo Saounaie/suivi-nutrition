@@ -1,10 +1,10 @@
 # Suivi nutrition
 
-Appli perso (PWA pour iPhone) de suivi des calories et macros, avec stock du frigo prévu à l'étape 2. Aucune installation, aucun serveur : les données restent sur l'appareil (IndexedDB) et s'exportent en JSON.
+Appli perso (PWA pour iPhone) de suivi des calories et macros, avec stock du frigo. Aucune installation, aucun serveur : les données restent sur l'appareil (IndexedDB) et s'exportent en JSON.
 
 ## Étapes
-1. Catalogue d'aliments, journal du jour, budget, thème, export/import (en cours)
-2. Frigo : stock, déduction automatique, mode « + Courses »
+1. Catalogue d'aliments, journal du jour, budget, thème, export/import (fait)
+2. Frigo : stock, déduction automatique, mode « + Courses » (fait)
 3. Scan de code-barres + Open Food Facts
 4. Suivi du poids et idées de repas
 
