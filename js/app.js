@@ -2,6 +2,7 @@ import {
   MEALS, MACROS, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
   searchFoods, validateState, uid, dayStatus, weekOf, reconcileEntries,
   ZONES, addStock, deductStock, stockOf, daysLeft, findByBarcode, normalizeBarcode,
+  upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals,
 } from './logic.js';
 import { loadState, saveState, askPersistent } from './store.js';
 import { startScanner } from './scanner.js';
@@ -147,7 +148,34 @@ function renderStock() {
     <div class="row between"><h1>Frigo</h1><button class="btn primary" data-action="courses">+ Courses</button></div>
     ${soon.length ? `<div class="alert ${soon.some((x) => daysLeft(x.dlc, todayISO()) < 0) ? 'red' : ''}">À consommer vite : ${soon.map((x) => esc(x.food.name)).join(', ')}</div>` : ''}
     ${zones || '<div class="card muted" style="margin-top:16px">Ton stock est vide. Touche « + Courses » pour ajouter ce que tu viens d\'acheter.</div>'}
+    ${ideasHTML()}
     <p class="small muted" style="margin-top:18px">Quand tu ajoutes un repas, la quantité est retirée du stock automatiquement (frigo d'abord, puis placard et congélateur).</p>`;
+}
+
+
+let ideas = [];
+function ideasHTML() {
+  const entries = state.entries.filter((e) => e.date === todayISO());
+  const left = remaining(state.settings.kcal, entries);
+  const protLeft = Math.round(state.settings.prot - totals(entries).prot);
+  ideas = suggestMeals(state.stock, state.foods, left, protLeft);
+  if (!ideas.length) return left < 150 ? '' : '<p class="small muted" style="margin-top:16px">Pas d\'idée de repas : ajoute des aliments avec leurs kcal au stock.</p>';
+  return `<h2>Idées pour tenir ton budget (${left} kcal · ${Math.max(0, protLeft)} g prot restants)</h2>
+    ${ideas.map((m, i) => `<div class="card" style="margin-top:10px">
+      <div>${m.items.map((c) => `${esc(c.food.name)} ${fmt(c.grams)} g`).join(' + ')}</div>
+      <div class="small muted" style="margin:4px 0 10px">${m.kcal} kcal · ${fmt(m.prot)} g prot</div>
+      <button class="btn block" data-action="idea-add" data-i="${i}">Ajouter à mon journal</button></div>`).join('')}`;
+}
+
+async function logIdea(i) {
+  const m = ideas[i]; if (!m) return;
+  const meal = mealOfHour(new Date().getHours());
+  for (const c of m.items) {
+    const zone = state.stock.filter((x) => x.foodId === c.food.id).sort((a, b) => ({ frigo: 0, placard: 1, congel: 2 })[a.zone] - ({ frigo: 0, placard: 1, congel: 2 })[b.zone])[0]?.zone || 'frigo';
+    const d = deductStock(state.stock, c.food.id, c.grams);
+    state.entries.push({ id: uid(), date: todayISO(), meal, foodId: c.food.id, label: c.food.name, grams: c.grams, deducted: d.deducted, zone, ...c.m });
+  }
+  await persist(); render(); toast('Ajouté au journal · retiré du stock');
 }
 
 function sheetStockItem(id) {
@@ -217,6 +245,77 @@ function sheetCourses(zone = 'frigo', picked = null) {
   input.addEventListener('input', draw); draw();
 }
 
+
+/* ---------- Écran Suivi ---------- */
+function chartSVG(points) {
+  const pts = points.slice(-60);
+  if (pts.length < 2) return '<p class="muted small" style="margin:8px 0 0">La courbe apparaît dès la deuxième pesée.</p>';
+  const avg = movingAverage(pts, 7);
+  const W = 340, H = 170, L = 34, R = 8, T = 10, B = 22;
+  const vals = pts.map((p) => p.value).concat(avg.map((p) => p.value));
+  const lo = Math.floor((Math.min(...vals) - 0.3) * 2) / 2, hi = Math.ceil((Math.max(...vals) + 0.3) * 2) / 2;
+  const t0 = new Date(pts[0].date + 'T12:00:00').getTime(), t1 = new Date(pts[pts.length - 1].date + 'T12:00:00').getTime();
+  const x = (d) => L + ((new Date(d + 'T12:00:00').getTime() - t0) / Math.max(1, t1 - t0)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / Math.max(0.1, hi - lo)) * (H - T - B);
+  const ticks = [lo, (lo + hi) / 2, hi];
+  const fd = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de poids, de ${fmt(pts[0].value)} à ${fmt(pts[pts.length - 1].value)} kg">
+    ${ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 4}" y="${y(v) + 3}" text-anchor="end">${fmt(v)}</text>`).join('')}
+    ${pts.map((p) => `<circle class="raw" cx="${x(p.date)}" cy="${y(p.value)}" r="2.5"/>`).join('')}
+    <polyline class="avg" points="${avg.map((p) => `${x(p.date)},${y(p.value)}`).join(' ')}"/>
+    <text x="${L}" y="${H - 6}">${fd(pts[0].date)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${fd(pts[pts.length - 1].date)}</text>
+  </svg>`;
+}
+
+function renderTrack() {
+  const today = todayISO();
+  const weights = state.body.filter((b) => b.weight != null).map((b) => ({ date: b.date, value: b.weight }));
+  const last = weights[weights.length - 1], first = weights[0];
+  const ago7 = [...weights].reverse().find((w) => w.date <= shiftDate(today, -6) || w === first);
+  const delta = (a, b) => (a == null || b == null ? '' : `<span class="${a - b <= 0 ? 'down' : 'up'}">${a - b > 0 ? '+' : ''}${fmt(a - b)} kg</span>`);
+  const ws = weekStats(state.entries, today, state.settings.kcal);
+  const waistAge = daysSinceMeasure(state.body, 'waist', today);
+  const todayRow = state.body.find((b) => b.date === today);
+  const recent = [...state.body].reverse().slice(0, 10);
+  view.innerHTML = `
+    <h1>Suivi</h1>
+    ${waistAge == null || waistAge >= 7 ? `<div class="alert">${waistAge == null ? 'Aucun tour de taille noté.' : `Dernier tour de taille il y a ${waistAge} jours.`} Mesure-le au nombril et prends ta photo de la semaine.</div>` : ''}
+    <h2>Mesure</h2>
+    <div class="card stack">
+      <label>Date<input type="date" id="b-date" value="${today}" max="${today}"></label>
+      <div class="grid2">
+        <label>Poids (kg)<input type="text" inputmode="decimal" id="b-w" value="${todayRow?.weight != null ? String(todayRow.weight).replace('.', ',') : ''}" placeholder="84,5"></label>
+        <label>Tour de taille (cm)<input type="text" inputmode="decimal" id="b-t" value="${todayRow?.waist != null ? String(todayRow.waist).replace('.', ',') : ''}" placeholder="95"></label>
+      </div>
+      <div class="small muted">Pèse-toi le matin, après les toilettes, avant de manger, dans la même tenue.</div>
+      <div id="b-err" class="small" style="color:var(--danger)"></div>
+      <button class="btn primary block" id="b-save">Enregistrer</button>
+    </div>
+    <h2>Courbe de poids</h2>
+    <div class="card">${chartSVG(weights)}<div class="small muted">Points : pesées · trait : moyenne sur 7 jours</div></div>
+    <h2>Bilan</h2>
+    <div class="stats">
+      <div class="stat"><span class="small muted">Dernier poids</span><b>${last ? fmt(last.value) + ' kg' : '—'}</b></div>
+      <div class="stat"><span class="small muted">Depuis la 1re pesée</span><b>${last && first && last !== first ? delta(last.value, first.value) : '—'}</b></div>
+      <div class="stat"><span class="small muted">Sur 7 jours</span><b>${last && ago7 && ago7 !== last ? delta(last.value, ago7.value) : '—'}</b></div>
+      <div class="stat"><span class="small muted">Jours dans le budget (7 j)</span><b>${ws.days ? `${ws.ok} / ${ws.days}` : '—'}</b></div>
+      <div class="stat"><span class="small muted">Moyenne kcal (7 j)</span><b>${ws.days ? ws.kcal : '—'}</b></div>
+      <div class="stat"><span class="small muted">Moyenne protéines (7 j)</span><b>${ws.days ? fmt(ws.prot) + ' g' : '—'}</b></div>
+    </div>
+    ${recent.length ? `<h2>Dernières mesures</h2><div class="list">${recent.map((b) => `
+      <button type="button" class="item" data-action="body-del" data-id="${esc(b.id)}">
+        <span>${new Date(b.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+        <span class="muted">${b.weight != null ? fmt(b.weight) + ' kg' : ''}${b.weight != null && b.waist != null ? ' · ' : ''}${b.waist != null ? fmt(b.waist) + ' cm' : ''}</span>
+      </button>`).join('')}</div><p class="small muted">Touche une ligne pour la supprimer.</p>` : ''}`;
+  $('#b-save').addEventListener('click', async () => {
+    const date = $('#b-date').value || today, w = parseNumber($('#b-w').value), t = parseNumber($('#b-t').value);
+    if (Number.isNaN(w) || Number.isNaN(t) || (w == null && t == null)) { $('#b-err').textContent = 'Indique un poids ou un tour de taille (nombre).'; return; }
+    if ((w != null && (w < 30 || w > 300)) || (t != null && (t < 40 || t > 200))) { $('#b-err').textContent = 'Valeur peu plausible : vérifie la saisie.'; return; }
+    upsertBody(state.body, { date, weight: w, waist: t });
+    await persist(); render(); toast('Mesure enregistrée');
+  });
+}
+
 /* ---------- Réglages ---------- */
 function renderSettings() {
   const s = state.settings;
@@ -260,7 +359,7 @@ function renderSettings() {
 
 function render() {
   document.querySelectorAll('#tabs button').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
-  ({ today: renderToday, stock: renderStock, foods: renderFoods, settings: renderSettings })[tab]();
+  ({ today: renderToday, stock: renderStock, track: renderTrack, foods: renderFoods, settings: renderSettings })[tab]();
 }
 
 /* ---------- Feuilles (dialogues) ---------- */
@@ -495,6 +594,8 @@ document.addEventListener('click', (e) => {
     'food-new-from-add': () => sheetFood(null, meal),
     'food-edit': () => sheetFood(id),
     export: onExport,
+    'body-del': async () => { if (!confirm('Supprimer cette mesure ?')) return; state.body = state.body.filter((b) => b.id !== id); await persist(); render(); },
+    'idea-add': () => logIdea(Number(el.dataset.i)),
     'clean-seed': async () => {
       const del = seedCleanable();
       if (!del.length || !confirm(`Supprimer ${del.length} aliments d'exemple jamais utilisés ?`)) return;

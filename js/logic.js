@@ -119,7 +119,11 @@ export function validateState(raw) {
     prot: num(s.prot) || 115,
     theme: ['dark', 'light', 'auto'].includes(s.theme) ? s.theme : 'dark',
   };
-  return { v: 1, settings, foods, entries, stock };
+  const inRange = (x, lo, hi) => { const n = optNum(x); return n != null && n >= lo && n <= hi ? Math.round(n * 10) / 10 : null; };
+  const body = (Array.isArray(raw.body) ? raw.body : [])
+    .map((b) => ({ id: str(b.id, 60), date: /^\d{4}-\d{2}-\d{2}$/.test(b.date) ? b.date : null, weight: inRange(b.weight, 20, 400), waist: inRange(b.waist, 30, 250) }))
+    .filter((b) => b.date && (b.weight != null || b.waist != null));
+  return { v: 1, settings, foods, entries, stock, body };
 }
 
 export function uid() {
@@ -236,4 +240,72 @@ export function mapOffProduct(json, code) {
     per100, portions, source: 'off',
     note: 'Données Open Food Facts : vérifie avec le paquet.',
   };
+}
+
+/* ---------- Suivi : poids, tour de taille, moyennes ---------- */
+
+/** Ajoute ou remplace la mesure d'un jour. Une valeur null laisse l'ancienne en place. */
+export function upsertBody(body, { date, weight = null, waist = null }) {
+  let b = body.find((x) => x.date === date);
+  if (!b) { b = { id: uid(), date, weight: null, waist: null }; body.push(b); }
+  if (weight != null) b.weight = weight;
+  if (waist != null) b.waist = waist;
+  body.sort((a, c) => a.date.localeCompare(c.date));
+  return b;
+}
+
+/** Moyenne glissante sur `days` jours calendaires (valeurs présentes dans la fenêtre). points = [{date, value}] triés. */
+export function movingAverage(points, days = 7) {
+  return points.map((p) => {
+    const from = shiftDate(p.date, -(days - 1));
+    const w = points.filter((q) => q.date >= from && q.date <= p.date);
+    return { date: p.date, value: Math.round((w.reduce((a, q) => a + q.value, 0) / w.length) * 10) / 10 };
+  });
+}
+
+/** Moyennes des 7 derniers jours (aujourd'hui inclus) sur les jours qui ont des repas. */
+export function weekStats(entries, today, budget) {
+  let days = 0, kcal = 0, prot = 0, ok = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = shiftDate(today, -i);
+    const list = entries.filter((e) => e.date === d);
+    if (!list.length) continue;
+    const t = totals(list);
+    days++; kcal += t.kcal; prot += t.prot;
+    if (dayStatus(t.kcal, budget, d < today) === 'ok') ok++;
+  }
+  return days ? { days, kcal: Math.round(kcal / days), prot: Math.round((prot / days) * 10) / 10, ok } : { days: 0, kcal: 0, prot: 0, ok: 0 };
+}
+
+/** Jours écoulés depuis la dernière mesure `field` ('weight' | 'waist'), null s'il n'y en a jamais eu. */
+export function daysSinceMeasure(body, field, today) {
+  const last = [...body].reverse().find((b) => b[field] != null);
+  return last ? daysLeft(today, last.date) : null;
+}
+
+/* ---------- Idées de repas à partir du stock ---------- */
+const defaultGrams = (f) => (f.portions[0] ? f.portions[0].grams : 100);
+
+/** Propose jusqu'à `max` repas (1 ou 2 aliments en stock, portions habituelles) qui tiennent dans les kcal restantes et aident à atteindre les protéines. */
+export function suggestMeals(stock, foods, kcalLeft, protLeft, max = 3) {
+  if (kcalLeft < 150) return [];
+  const cands = [];
+  for (const f of foods) {
+    if (f.per100.kcal == null) continue;
+    const grams = defaultGrams(f);
+    if (stockOf(stock, f.id) < grams) continue;
+    cands.push({ food: f, grams, m: macrosFor(f.per100, grams) });
+  }
+  const combos = [];
+  for (let i = 0; i < cands.length; i++) {
+    combos.push([cands[i]]);
+    for (let j = i + 1; j < cands.length; j++) combos.push([cands[i], cands[j]]);
+  }
+  const min = Math.min(0.35 * kcalLeft, 200);
+  const scored = combos
+    .map((items) => ({ items, kcal: items.reduce((a, c) => a + c.m.kcal, 0), prot: Math.round(items.reduce((a, c) => a + c.m.prot, 0) * 10) / 10 }))
+    .filter((c) => c.kcal <= kcalLeft && c.kcal >= min)
+    .map((c) => ({ ...c, score: -Math.abs(c.prot - Math.min(Math.max(protLeft, 0), 40)) - Math.abs(c.kcal - 0.8 * kcalLeft) / 20 }))
+    .sort((a, b) => b.score - a.score || a.items.length - b.items.length);
+  return scored.slice(0, max);
 }

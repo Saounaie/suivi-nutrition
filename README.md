@@ -6,7 +6,7 @@ Appli perso (PWA pour iPhone) de suivi des calories et macros, avec stock du fri
 1. Catalogue d'aliments, journal du jour, budget, thème, export/import (fait)
 2. Frigo : stock, déduction automatique, mode « + Courses » (fait)
 3. Scan de code-barres + Open Food Facts (fait, à valider sur iPhone)
-4. Suivi du poids et idées de repas
+4. Suivi du poids, tour de taille, moyennes sur 7 jours, idées de repas selon le frigo (fait)
 
 ## Développement
 - `npm test` : tests de la logique (`js/logic.js`), sans dépendance.

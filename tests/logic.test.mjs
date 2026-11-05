@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf, reconcileEntries, addStock, deductStock, stockOf, daysLeft, normalizeBarcode, findByBarcode, mapOffProduct } from '../js/logic.js';
+import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf, reconcileEntries, addStock, deductStock, stockOf, daysLeft, normalizeBarcode, findByBarcode, mapOffProduct, upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals } from '../js/logic.js';
 
 test('macrosFor : 150 g de poulet à 110 kcal / 23 g prot', () => {
   const m = macrosFor({ kcal: 110, prot: 23 }, 150);
@@ -156,4 +156,55 @@ test('mapOffProduct : kJ converti, valeurs absentes = null, produit absent = nul
   assert.equal(mapOffProduct({ status: 0 }, '1'), null);
   assert.equal(mapOffProduct({ status: 1, product: { product_name: 'Vide', nutriments: {} } }, '1'), null);
   assert.equal(mapOffProduct(null, '1'), null);
+});
+
+test('upsertBody : un enregistrement par jour, valeur null conserve l\'ancienne', () => {
+  const b = [];
+  upsertBody(b, { date: '2026-11-05', weight: 84.5 });
+  upsertBody(b, { date: '2026-11-05', waist: 95 });
+  upsertBody(b, { date: '2026-11-02', weight: 84.5 });
+  assert.equal(b.length, 2);
+  assert.equal(b[0].date, '2026-11-02');
+  assert.deepEqual([b[1].weight, b[1].waist], [84.5, 95]);
+});
+
+test('movingAverage sur 7 jours calendaires', () => {
+  const pts = [{ date: '2026-11-01', value: 84 }, { date: '2026-11-02', value: 83 }, { date: '2026-11-10', value: 82 }];
+  const a = movingAverage(pts, 7);
+  assert.equal(a[1].value, 83.5);
+  assert.equal(a[2].value, 82);
+});
+
+test('weekStats : moyenne sur les jours renseignés', () => {
+  const e = [
+    { date: '2026-11-05', kcal: 1800, prot: 100, carbs: 0, sugars: 0, fat: 0, fiber: 0 },
+    { date: '2026-11-04', kcal: 2000, prot: 120, carbs: 0, sugars: 0, fat: 0, fiber: 0 },
+    { date: '2026-10-20', kcal: 3000, prot: 10, carbs: 0, sugars: 0, fat: 0, fiber: 0 },
+  ];
+  const w = weekStats(e, '2026-11-05', 1900);
+  assert.deepEqual([w.days, w.kcal, w.prot], [2, 1900, 110]);
+  assert.equal(w.ok, 1);
+  assert.equal(weekStats([], '2026-11-05', 1900).days, 0);
+});
+
+test('daysSinceMeasure', () => {
+  const b = [{ date: '2026-10-24', weight: 82.5, waist: null }, { date: '2026-11-02', weight: 84.5, waist: null }];
+  assert.equal(daysSinceMeasure(b, 'weight', '2026-11-05'), 3);
+  assert.equal(daysSinceMeasure(b, 'waist', '2026-11-05'), null);
+});
+
+test('suggestMeals : respecte stock, kcal restantes et vise les protéines', () => {
+  const foods = [
+    { id: 'p', name: 'Poulet', per100: { kcal: 110, prot: 23 }, portions: [{ name: 'p', grams: 150 }] },
+    { id: 'f', name: 'Frites', per100: { kcal: 123, prot: 2 }, portions: [{ name: 'p', grams: 200 }] },
+    { id: 'x', name: 'SansKcal', per100: { kcal: null }, portions: [] },
+    { id: 'g', name: 'Gâteau', per100: { kcal: 400, prot: 5 }, portions: [{ name: 'p', grams: 100 }] },
+  ];
+  const stock = [{ id: '1', foodId: 'p', grams: 450 }, { id: '2', foodId: 'f', grams: 1000 }, { id: '3', foodId: 'x', grams: 500 }, { id: '4', foodId: 'g', grams: 50 }];
+  const r = suggestMeals(stock, foods, 600, 40);
+  assert.ok(r.length > 0);
+  assert.ok(r.every((m) => m.kcal <= 600));
+  assert.ok(r.every((m) => m.items.every((i) => i.food.id !== 'x' && i.food.id !== 'g')));
+  assert.equal(r[0].items.length, 2);
+  assert.deepEqual(suggestMeals(stock, foods, 100, 40), []);
 });

@@ -58,7 +58,7 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color:
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { min-height: 44px; padding: 0 14px; border-radius: 22px; border: 1px solid var(--line); background: var(--card); cursor: pointer; }
 .chip.on { border: 2px solid var(--accent); background: var(--soft); font-weight: 600; }
-#tabs { position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+#tabs { position: fixed; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
 #tabs button { min-height: 58px; border: 0; background: none; color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; }
 #tabs button[aria-current="page"] { color: var(--accent); font-weight: 700; }
 .fab { position: fixed; right: 20px; bottom: calc(76px + env(safe-area-inset-bottom)); width: 60px; height: 60px; border-radius: 30px; border: 0; background: var(--accent); color: var(--accent-ink); font-size: 32px; line-height: 1; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
@@ -96,3 +96,13 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .alert { background: color-mix(in srgb, var(--warn) 22%, var(--card)); border-radius: 12px; padding: 12px 14px; font-size: 14px; margin-top: 14px; }
 .alert.red { background: color-mix(in srgb, var(--danger) 24%, var(--card)); }
 .pill.red { border: 1px solid var(--danger); color: var(--danger); background: transparent; }
+
+.chart { width: 100%; height: auto; display: block; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart text { fill: var(--muted); font-size: 10px; }
+.chart .raw { fill: var(--muted); }
+.chart .avg { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.stat { background: var(--card); border-radius: 14px; padding: 12px 14px; }
+.stat b { display: block; font-size: 22px; margin-top: 2px; }
+.down { color: var(--accent); } .up { color: var(--warn); }

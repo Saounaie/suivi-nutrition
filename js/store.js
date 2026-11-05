@@ -39,6 +39,7 @@ export function freshState() {
     foods: [],
     entries: [],
     stock: [],
+    body: [],
   };
 }
 
