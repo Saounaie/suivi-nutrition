@@ -1,6 +1,6 @@
 // Cache minimal pour l'usage hors ligne. Incrémenter VERSION à chaque déploiement.
-const VERSION = 'v7';
-const FILES = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/logic.js', 'js/store.js', 'js/seed.js', 'js/off.js', 'js/scanner.js', 'vendor/zxing-library-0.21.3.min.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png'];
+const VERSION = 'v8';
+const FILES = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/logic.js', 'js/store.js', 'js/seed.js', 'js/off.js', 'js/sync.js', 'js/scanner.js', 'vendor/zxing-library-0.21.3.min.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

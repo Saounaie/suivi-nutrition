@@ -8,6 +8,7 @@ import { loadState, saveState, askPersistent } from './store.js';
 import { startScanner } from './scanner.js';
 import { isSeedFood } from './seed.js';
 import { lookupBarcode } from './off.js';
+import { pushSnapshot, validRepo } from './sync.js';
 
 let state;
 let tab = 'today';
@@ -33,6 +34,7 @@ function toast(msg) {
 async function persist() {
   const ok = await saveState(state);
   if (!ok) toast("Enregistrement impossible : exporte tes données.");
+  scheduleSync();
 }
 
 function applyTheme() {
@@ -316,6 +318,67 @@ function renderTrack() {
   });
 }
 
+
+/* ---------- Synchronisation vers un dépôt privé (lecture par Claude) ---------- */
+const ls = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch (_) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* ignore */ } },
+  del: (k) => { try { localStorage.removeItem(k); } catch (_) { /* ignore */ } },
+};
+let syncSha = null, syncTimer = null, syncBusy = false;
+
+function scheduleSync() {
+  const cfg = ls.get('syncCfg');
+  if (!cfg?.token || !cfg?.repo) return;
+  ls.set('syncDirty', true);
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(doSync, 4000);
+}
+
+async function doSync() {
+  const cfg = ls.get('syncCfg');
+  if (!cfg?.token || !cfg?.repo || syncBusy) return null;
+  clearTimeout(syncTimer);
+  syncBusy = true;
+  const r = await pushSnapshot(cfg, state, fetch, syncSha);
+  syncBusy = false;
+  if (r.ok) { syncSha = r.sha; ls.del('syncDirty'); ls.set('syncStatus', { ok: true, at: new Date().toISOString() }); }
+  else ls.set('syncStatus', { ok: false, at: new Date().toISOString(), message: r.message });
+  if (tab === 'settings') showSyncInfo();
+  return r;
+}
+
+function showSyncInfo() {
+  const el = $('#sync-info'); if (!el) return;
+  const cfg = ls.get('syncCfg'), st = ls.get('syncStatus');
+  const when = st ? new Date(st.at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  el.innerHTML = !cfg?.token ? 'Synchronisation désactivée.'
+    : st?.ok ? `<span class="down">Dernière copie réussie : ${esc(when)}</span>`
+    : st ? `<span style="color:var(--danger)">Échec (${esc(when)}) : ${esc(st.message)}</span>`
+    : 'En attente de la première copie.';
+}
+
+function bindSyncSettings() {
+  const cfg = ls.get('syncCfg');
+  $('#sync-repo').value = cfg?.repo || '';
+  $('#sync-token').placeholder = cfg?.token ? '•••••••• (enregistré)' : 'github_pat_…';
+  showSyncInfo();
+  $('#sync-save').addEventListener('click', async () => {
+    const repo = $('#sync-repo').value.trim(), token = $('#sync-token').value.trim() || cfg?.token || '';
+    if (!validRepo(repo)) { toast('Dépôt invalide : écris-le sous la forme compte/nom'); return; }
+    if (!token) { toast('Colle ton jeton GitHub'); return; }
+    ls.set('syncCfg', { repo, token }); $('#sync-token').value = '';
+    $('#sync-info').textContent = 'Envoi en cours…';
+    const r = await doSync();
+    toast(r?.ok ? 'Synchronisation active' : (r?.message || 'Échec'));
+    renderSettings();
+  });
+  $('#sync-off')?.addEventListener('click', () => {
+    if (!confirm('Désactiver la synchronisation et effacer le jeton de cet appareil ? (Pense à le révoquer aussi sur GitHub.)')) return;
+    ['syncCfg', 'syncStatus', 'syncDirty'].forEach(ls.del); syncSha = null; renderSettings();
+  });
+}
+
 /* ---------- Réglages ---------- */
 function renderSettings() {
   const s = state.settings;
@@ -342,6 +405,15 @@ function renderSettings() {
       <label class="btn block" style="flex-direction:row;justify-content:center;color:var(--text)">Importer un fichier<input type="file" id="import" accept="application/json,.json" hidden></label>
       <div class="small muted" id="backup-info"></div>
     </div>
+    <h2>Synchronisation avec Claude</h2>
+    <div class="card stack">
+      <p class="small muted" style="margin:0">Envoie une copie de tes données dans un dépôt GitHub <b>privé</b> après chaque changement, pour que Claude puisse les consulter. Elle sert aussi de sauvegarde.</p>
+      <label>Dépôt privé (compte/nom)<input type="text" id="sync-repo" placeholder="Saounaie/suivi-nutrition-data" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <label>Jeton d'accès GitHub<input type="password" id="sync-token" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <button class="btn primary block" id="sync-save">Enregistrer et synchroniser</button>
+      <div class="small" id="sync-info"></div>
+      ${ls.get('syncCfg')?.token ? '<button class="btn danger block" id="sync-off">Désactiver et effacer le jeton</button>' : ''}
+    </div>
     <h2>À propos</h2>
     <div class="card small muted">Valeurs nutritionnelles saisies à la main. Données Open Food Facts (licence ODbL) à venir à l'étape 3.</div>`;
   const save = () => {
@@ -353,6 +425,7 @@ function renderSettings() {
   };
   ['#s-kcal', '#s-prot', '#s-theme'].forEach((id) => $(id).addEventListener('change', save));
   $('#import').addEventListener('change', onImport);
+  bindSyncSettings();
   const last = localStorage.getItem('lastExport');
   $('#backup-info').textContent = last ? `Dernier export : ${new Date(last).toLocaleDateString('fr-FR')}` : "Aucun export pour l'instant.";
 }
@@ -612,12 +685,15 @@ document.addEventListener('click', (e) => {
   actions[a]?.();
 });
 
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && ls.get('syncDirty')) doSync(); });
+
 async function init() {
   state = await loadState();
   if (reconcileEntries(state.entries, state.foods)) await persist();
   applyTheme();
   render();
   askPersistent();
+  if (ls.get('syncDirty')) doSync();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   const last = localStorage.getItem('lastExport');
   if (state.entries.length > 20 && (!last || Date.now() - new Date(last) > 14 * 864e5)) toast('Pense à exporter tes données (Réglages)');
