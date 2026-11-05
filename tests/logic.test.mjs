@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf } from '../js/logic.js';
+import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf, reconcileEntries } from '../js/logic.js';
 
 test('macrosFor : 150 g de poulet à 110 kcal / 23 g prot', () => {
   const m = macrosFor({ kcal: 110, prot: 23 }, 150);
@@ -74,4 +74,18 @@ test('weekOf : lundi à dimanche', () => {
   assert.equal(w[6], '2026-11-08');
   assert.equal(weekOf('2026-11-08')[0], '2026-11-02');
   assert.equal(weekOf('2026-11-02')[0], '2026-11-02');
+});
+
+test('reconcileEntries : la modification d\'un aliment met à jour ses repas', () => {
+  const foods = [{ id: 'f1', name: 'Skyr', per100: { kcal: 57, prot: 12 } }];
+  const entries = [
+    { id: 'a', foodId: 'f1', label: 'Skyr', grams: 200, kcal: 114, prot: 20, carbs: 0, sugars: 0, fat: 0, fiber: 0 },
+    { id: 'b', foodId: null, label: 'Cantine', grams: null, kcal: 600, prot: 22, carbs: 0, sugars: 0, fat: 0, fiber: 0 },
+    { id: 'c', foodId: 'supprime', label: 'Ancien', grams: 100, kcal: 80, prot: 5, carbs: 0, sugars: 0, fat: 0, fiber: 0 },
+  ];
+  assert.equal(reconcileEntries(entries, foods), 1);
+  assert.equal(entries[0].prot, 24);
+  assert.equal(entries[1].kcal, 600);
+  assert.equal(entries[2].kcal, 80);
+  assert.equal(reconcileEntries(entries, foods), 0);
 });

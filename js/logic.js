@@ -125,3 +125,19 @@ export function weekOf(iso) {
   const dow = (new Date(y, m - 1, d).getDay() + 6) % 7;
   return Array.from({ length: 7 }, (_, i) => shiftDate(iso, i - dow));
 }
+
+/** Recalcule les repas liés à un aliment (foodId + quantité) d'après ses valeurs actuelles. Les saisies rapides et les aliments supprimés gardent leurs valeurs. Renvoie le nombre de repas modifiés. */
+export function reconcileEntries(entries, foods) {
+  const byId = new Map(foods.map((f) => [f.id, f]));
+  let changed = 0;
+  for (const e of entries) {
+    const f = e.foodId ? byId.get(e.foodId) : null;
+    if (!f || !(e.grams > 0)) continue;
+    const m = macrosFor(f.per100, e.grams);
+    let diff = false;
+    for (const k of MACROS) if (e[k] !== m[k]) { e[k] = m[k]; diff = true; }
+    if (e.label !== f.name) { e.label = f.name; diff = true; }
+    if (diff) changed++;
+  }
+  return changed;
+}

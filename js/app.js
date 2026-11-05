@@ -1,6 +1,6 @@
 import {
   MEALS, MACROS, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
-  searchFoods, validateState, uid, dayStatus, weekOf,
+  searchFoods, validateState, uid, dayStatus, weekOf, reconcileEntries,
 } from './logic.js';
 import { loadState, saveState, askPersistent } from './store.js';
 
@@ -280,8 +280,9 @@ function sheetFood(id, afterMeal) {
     const dup = barcode && state.foods.find((x) => x.barcode === barcode && x.id !== id);
     if (dup) { $('#ferr').textContent = `Ce code-barres est déjà utilisé par « ${dup.name} ».`; return; }
     const data = { name, brand: $('#fb').value.trim(), barcode, per100, portions, note: $('#fnote').value.trim(), source: 'manual' };
-    if (id) Object.assign(f, data); else state.foods.push({ id: uid(), ...data });
-    await persist(); closeSheet(); render(); toast('Enregistré');
+    let updated = 0;
+    if (id) { Object.assign(f, data); updated = reconcileEntries(state.entries, state.foods); } else state.foods.push({ id: uid(), ...data });
+    await persist(); closeSheet(); render(); toast(updated ? `Enregistré · ${updated} repas mis à jour` : 'Enregistré');
     if (afterMeal && !id) sheetAdd(afterMeal);
   });
   const del = $('#del');
@@ -338,6 +339,7 @@ document.addEventListener('click', (e) => {
 
 async function init() {
   state = await loadState();
+  if (reconcileEntries(state.entries, state.foods)) await persist();
   applyTheme();
   render();
   askPersistent();
