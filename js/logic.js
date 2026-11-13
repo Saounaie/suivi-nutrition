@@ -113,18 +113,25 @@ export function validateState(raw) {
       dlc: /^\d{4}-\d{2}-\d{2}$/.test(x.dlc) ? x.dlc : null,
     }))
     .filter((x) => foodIds.has(x.foodId) && x.grams > 0);
+  const inRange = (x, lo, hi) => { const n = optNum(x); return n != null && n >= lo && n <= hi ? Math.round(n * 10) / 10 : null; };
   const s = raw.settings || {};
   const settings = {
     kcal: num(s.kcal) || 1900,
     prot: num(s.prot) || 115,
     theme: ['dark', 'light', 'auto'].includes(s.theme) ? s.theme : 'dark',
     sounds: s.sounds !== false,
+    goalWeight: inRange(s.goalWeight, 30, 300),
+    goalStart: inRange(s.goalStart, 30, 300),
+    tone: ['mix', 'warm', 'fun'].includes(s.tone) ? s.tone : 'mix',
   };
-  const inRange = (x, lo, hi) => { const n = optNum(x); return n != null && n >= lo && n <= hi ? Math.round(n * 10) / 10 : null; };
+  const trophies = {};
+  if (raw.trophies && typeof raw.trophies === 'object') {
+    for (const [k, v] of Object.entries(raw.trophies)) if (/^[a-z0-9-]{1,40}$/.test(k) && /^\d{4}-\d{2}-\d{2}$/.test(v)) trophies[k] = v;
+  }
   const body = (Array.isArray(raw.body) ? raw.body : [])
     .map((b) => ({ id: str(b.id, 60), date: /^\d{4}-\d{2}-\d{2}$/.test(b.date) ? b.date : null, weight: inRange(b.weight, 20, 400), waist: inRange(b.waist, 30, 250) }))
     .filter((b) => b.date && (b.weight != null || b.waist != null));
-  return { v: 1, settings, foods, entries, stock, body };
+  return { v: 1, settings, foods, entries, stock, body, trophies };
 }
 
 export function uid() {

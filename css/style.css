@@ -168,6 +168,43 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); backdrop-filter: blur(3px); a
 .stat b { display: block; font: 700 24px var(--display); margin-top: 4px; font-variant-numeric: tabular-nums; }
 .down { color: var(--accent); } .up { color: var(--warn); }
 
+/* ===== Encouragements, niveau, trophées ===== */
+.cheer { margin-top: 14px; padding: 14px 16px; border-radius: 20px; background: linear-gradient(135deg, var(--soft), transparent 85%), var(--card); border: 1px solid var(--line); }
+.cheer p { margin: 0; font-size: 15px; line-height: 1.4; }
+.streaks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.streak-chip { font-size: 12.5px; font-weight: 600; padding: 5px 11px; border-radius: 14px; background: var(--soft); color: var(--text); }
+.streak-chip.dim { background: var(--card-2); color: var(--muted); font-weight: 500; }
+.level .lv-name { display: block; font: 700 22px var(--display); margin-top: 2px; }
+.lv-rank { width: 44px; height: 44px; border-radius: 15px; display: flex; align-items: center; justify-content: center; font: 700 20px var(--display); background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: var(--accent-ink); }
+.level .bar { height: 10px; margin: 14px 0 8px; }
+.bar.goal { height: 12px; }
+.recap-msg { margin: 0; }
+.recap { margin: 12px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--muted); }
+.recap b { color: var(--text); }
+.trophies { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.trophy { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px 12px; border-radius: 20px; border: 1px solid var(--line); background: var(--card); cursor: pointer; text-align: center; transition: transform .12s; min-width: 0; }
+.trophy:active { transform: scale(.95); }
+.trophy.done { background: linear-gradient(160deg, var(--soft), var(--card) 80%); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.trophy .t-ico { font-size: 30px; line-height: 1; }
+.trophy .t-name { font-size: 12px; font-weight: 600; line-height: 1.2; }
+.trophy .t-ok { font-size: 11px; color: var(--accent); font-weight: 600; }
+.trophy .bar { width: 100%; height: 5px; margin: 2px 0 0; }
+.trophy.locked .t-ico { filter: grayscale(1); opacity: .35; }
+.trophy.locked .t-name { color: var(--muted); }
+.trophy-big { font-size: 72px; line-height: 1; text-align: center; padding: 8px 0; }
+.trophy-big.locked { filter: grayscale(1); opacity: .35; }
+
+/* ===== Trophée débloqué ===== */
+#trophy-pop { position: fixed; left: 0; right: 0; top: calc(14px + env(safe-area-inset-top)); z-index: 60; display: flex; justify-content: center; pointer-events: none; opacity: 0; transform: translateY(-24px) scale(.96); transition: opacity .3s, transform .45s cubic-bezier(.2, .9, .3, 1.3); }
+#trophy-pop.show { opacity: 1; transform: none; pointer-events: auto; }
+.pop-card { display: flex; align-items: center; gap: 14px; padding: 14px 20px 14px 14px; max-width: min(92%, 420px); border-radius: 24px; background: var(--card); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); box-shadow: var(--shadow), 0 0 40px color-mix(in srgb, var(--accent) 35%, transparent); }
+.pop-icon { font-size: 40px; line-height: 1; animation: pop .6s .1s cubic-bezier(.3, 1.6, .5, 1) both; }
+.pop-card b { display: block; font: 700 16px var(--display); }
+.pop-card span { font-size: 13px; color: var(--muted); }
+.confetti { position: absolute; top: 40px; left: 50%; width: 8px; height: 12px; border-radius: 2px; opacity: 0; pointer-events: none; }
+#trophy-pop.show .confetti { animation: confetti var(--d) var(--w) cubic-bezier(.2, .7, .4, 1) forwards; }
+@keyframes confetti { 0% { opacity: 1; transform: translate(0, 0) rotate(0); } 100% { opacity: 0; transform: translate(var(--x), 220px) rotate(var(--r)); } }
+
 /* ===== Animations ===== */
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes grow { from { transform: scaleX(0); } }

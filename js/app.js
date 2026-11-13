@@ -11,6 +11,10 @@ import { lookupBarcode } from './off.js';
 import { pushSnapshot, fetchSnapshot, dataSize, validRepo } from './sync.js';
 import { APP_VERSION } from './version.js';
 import { sfx, setSoundEnabled } from './sound.js';
+import {
+  computeStats, TROPHIES, TROPHY_GROUPS, trophyProgress, unlockedTrophies, levelOf,
+  pickMessage, seedOf, situation, weekRecap, goalKey,
+} from './motivation.js';
 
 let state;
 let tab = 'today';
@@ -23,6 +27,7 @@ const sheet = $('#sheet');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => (n == null ? '?' : String(Math.round(n * 10) / 10).replace('.', ','));
+const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
 const foodById = (id) => state.foods.find((f) => f.id === id);
 
 function toast(msg, sound = 'success') {
@@ -39,6 +44,73 @@ async function persist() {
   const ok = await saveState(state);
   if (!ok) toast("Enregistrement impossible : exporte tes données.", 'error');
   scheduleSync();
+  setTimeout(checkProgress, 350);
+}
+
+/* ---------- Motivation : trophées et petits encouragements ---------- */
+const tone = () => state.settings.tone || 'mix';
+const msg = (key, seedStr, vars) => pickMessage(key, seedOf(seedStr), tone(), vars);
+const announced = new Set();
+let pendingPop = [];
+
+function markDayAnnounced() {
+  const today = todayISO();
+  if (totals(state.entries.filter((e) => e.date === today)).prot >= state.settings.prot) announced.add(`${today}:prot`);
+}
+
+/** Débloque les nouveaux trophées (une seule fois chacun) et félicite pour l'objectif de protéines du jour. */
+async function checkProgress() {
+  const today = todayISO();
+  state.trophies = state.trophies || {};
+  const fresh = unlockedTrophies(computeStats(state, today)).filter((id) => !(id in state.trophies));
+  if (fresh.length) {
+    for (const id of fresh) state.trophies[id] = today;
+    await saveState(state); scheduleSync();
+    pendingPop.push(...fresh);
+  }
+  const key = `${today}:prot`;
+  const protHit = !announced.has(key) && totals(state.entries.filter((e) => e.date === today)).prot >= state.settings.prot;
+  if (protHit) announced.add(key);
+  if (pendingPop.length) showPop();
+  else if (protHit) toast(msg('protGoal', key), 'goal');
+}
+
+function showPop() {
+  if (sheet.open || !pendingPop.length) return;
+  const ids = [...new Set(pendingPop)]; pendingPop = [];
+  const list = ids.map((id) => TROPHIES.find((t) => t.id === id)).filter(Boolean);
+  if (!list.length) return;
+  const el = $('#trophy-pop');
+  const names = list.map((t) => esc(t.name)).join(' · ');
+  el.innerHTML = `<div class="pop-card"><div class="pop-icon">${list.length === 1 ? list[0].icon : '🏆'}</div>
+    <div><b>${list.length === 1 ? 'Trophée débloqué !' : `${list.length} trophées débloqués !`}</b><span>${names}</span></div></div>`;
+  if (!reduceMotion()) {
+    const colors = ['#6ee7a8', '#ffb454', '#6aa8ff', '#b79cff', '#f2d56b', '#ff7a7a'];
+    el.insertAdjacentHTML('beforeend', Array.from({ length: 28 }, (_, i) =>
+      `<i class="confetti" style="--x:${Math.round((Math.random() - .5) * 320)}px;--r:${Math.round(Math.random() * 720 - 360)}deg;--d:${(1.4 + Math.random() * 1.2).toFixed(2)}s;--w:${(Math.random() * .25).toFixed(2)}s;background:${colors[i % colors.length]}"></i>`).join(''));
+  }
+  el.classList.add('show');
+  sfx.goal();
+  clearTimeout(showPop.h);
+  showPop.h = setTimeout(() => el.classList.remove('show'), 4600);
+}
+$('#trophy-pop').addEventListener('click', () => $('#trophy-pop').classList.remove('show'));
+sheet.addEventListener('close', () => setTimeout(showPop, 250));
+
+/** Messages et séries du jour, affichés en haut du journal. */
+function cheerHTML() {
+  const today = todayISO();
+  const st = computeStats(state, today);
+  const entries = state.entries.filter((e) => e.date === today);
+  const t = totals(entries);
+  const sit = situation({ hour: new Date().getHours(), count: entries.length, kcal: t.kcal, budget: state.settings.kcal, prot: t.prot, protGoal: state.settings.prot, streak: st.log.current, daysAway: st.daysAway });
+  const text = msg(sit.key, `${today}:${sit.key}`, sit.vars);
+  const chips = [
+    st.log.current >= 1 ? `<span class="streak-chip">🔥 ${plural(st.log.current, 'jour')} de suivi</span>` : '',
+    st.budget.current >= 1 ? `<span class="streak-chip">🎯 ${plural(st.budget.current, 'jour')} dans le budget</span>` : '',
+    st.log.current >= 2 ? `<span class="streak-chip dim">🃏 Joker ${st.log.jokerLeft ? 'disponible' : 'utilisé cette semaine'}</span>` : '',
+  ].join('');
+  return `<div class="cheer"><p>${esc(text)}</p>${chips ? `<div class="streaks">${chips}</div>` : ''}</div>`;
 }
 
 function applyTheme() {
@@ -97,6 +169,7 @@ function renderToday() {
     </div>
     <div class="muted small" style="margin-top:4px">${esc(dateLabel(date))}</div>
     <div class="week">${week}</div>
+    ${date === todayISO() ? cheerHTML() : ''}
     <div class="card hero s-${st}">
       <div class="hero-top">
         <div class="ring" role="img" aria-label="${t.kcal} kcal sur ${state.settings.kcal}">
@@ -311,8 +384,98 @@ function chartSVG(points) {
   </svg>`;
 }
 
+const unlockedIds = () => TROPHIES.filter((t) => t.id in (state.trophies || {})).map((t) => t.id);
+
+function levelHTML() {
+  const n = unlockedIds().length, lv = levelOf(n);
+  return `<div class="card level">
+    <div class="row between"><div><span class="small muted">Ton niveau</span><b class="lv-name">${esc(lv.name)}</b></div><span class="lv-rank">${lv.rank}</span></div>
+    <div class="bar"><i style="width:${Math.round(lv.pct * 100)}%"></i></div>
+    <div class="small muted">${n} / ${TROPHIES.length} trophées${lv.next ? ` · encore ${lv.next.need} pour « ${esc(lv.next.name)} »` : ' · niveau maximum atteint'}</div>
+  </div>`;
+}
+
+function goalHTML(st) {
+  const g = state.settings.goalWeight;
+  if (!g) return `<h2>Objectif</h2><div class="card stack"><p class="small muted" style="margin:0">Fixe un poids cible : l'appli suit ta progression et t'encourage en chemin.</p><button class="btn primary block" data-action="goal">Définir mon objectif</button></div>`;
+  const edit = '<button class="btn block" data-action="goal">Modifier l\'objectif</button>';
+  if (st.startWeight == null || st.curAvg == null) return `<h2>Objectif</h2><div class="card stack"><div>Poids cible : <b>${fmt(g)} kg</b></div><div class="small muted">Enregistre une première pesée pour suivre ta progression.</div>${edit}</div>`;
+  if (st.goal == null) return `<h2>Objectif</h2><div class="card stack"><div class="small warn">Ton poids cible (${fmt(g)} kg) doit être inférieur à ton poids de départ (${fmt(st.startWeight)} kg).</div>${edit}</div>`;
+  const left = Math.max(0, Math.round((st.curAvg - g) * 10) / 10), pct = Math.round(st.goalFrac * 100);
+  const text = msg(goalKey(st.goalFrac), `goal:${weekOf(todayISO())[0]}`, { left: fmt(left) });
+  return `<h2>Objectif</h2><div class="card stack">
+    <div class="row between"><span class="small muted">Départ ${fmt(st.startWeight)} kg</span><b>${pct} %</b><span class="small muted">Cible ${fmt(g)} kg</span></div>
+    <div class="bar goal"><i style="width:${pct}%"></i></div>
+    <div>${esc(text)}</div>
+    <div class="small muted">Poids actuel (moyenne 7 jours) : ${fmt(st.curAvg)} kg${left > 0 ? ` · reste ${fmt(left)} kg` : ''}</div>
+    ${edit}</div>`;
+}
+
+function recapHTML() {
+  const today = todayISO(), r = weekRecap(state, today);
+  const lines = r.days ? [
+    `<li><b>${r.ok} / ${r.days}</b> jours dans le budget</li>`,
+    `<li><b>${r.protDays}</b> ${r.protDays > 1 ? 'jours' : 'jour'} avec l'objectif de protéines atteint</li>`,
+    r.trend != null ? `<li>Poids (moyenne) : <b class="${r.trend <= 0 ? 'down' : 'up'}">${r.trend > 0 ? '+' : ''}${fmt(r.trend)} kg</b> en 7 jours</li>` : '',
+  ].join('') : '';
+  return `<h2>Ta semaine</h2><div class="card"><p class="recap-msg">${esc(msg(r.key, `${weekOf(today)[0]}:${r.key}`))}</p>${lines ? `<ul class="recap">${lines}</ul>` : ''}</div>`;
+}
+
+function trophiesHTML(st) {
+  return TROPHY_GROUPS.map((g) => `<h2>${g.label}</h2><div class="trophies">${TROPHIES.filter((t) => t.group === g.id).map((t) => {
+    const done = t.id in (state.trophies || {}), p = trophyProgress(t, st);
+    return `<button type="button" class="trophy ${done ? 'done' : 'locked'}" data-action="trophy" data-id="${t.id}">
+      <span class="t-ico">${t.icon}</span><span class="t-name">${esc(t.name)}</span>
+      ${done ? '<span class="t-ok">Débloqué</span>' : `<div class="bar"><i style="width:${Math.round((p.value / p.target) * 100)}%"></i></div>`}</button>`;
+  }).join('')}</div>`).join('');
+}
+
+function sheetTrophy(id) {
+  const t = TROPHIES.find((x) => x.id === id); if (!t) return;
+  const p = trophyProgress(t, computeStats(state, todayISO())), at = state.trophies?.[id];
+  const needGoal = id.startsWith('goal') && !state.settings.goalWeight;
+  openSheet(`
+    <header><h3>${esc(t.name)}</h3><button class="icon-btn" data-action="close">Fermer</button></header>
+    <div class="trophy-big ${at ? '' : 'locked'}">${t.icon}</div>
+    <p style="text-align:center;margin:0">${esc(t.desc)}</p>
+    ${at ? `<p class="small down" style="text-align:center;margin:0">Débloqué le ${new Date(at + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}</p>`
+      : `<div class="bar"><i style="width:${Math.round((p.value / p.target) * 100)}%"></i></div>
+         <div class="small muted" style="text-align:center">${needGoal ? 'Fixe d\'abord un objectif de poids.' : `${fmt(p.value)} / ${fmt(p.target)}${t.unit ? ' ' + t.unit : ''}`}</div>`}`);
+}
+
+function sheetGoal() {
+  const s = state.settings, firstW = state.body.find((b) => b.weight != null)?.weight ?? null;
+  const val = (n) => (n == null ? '' : String(n).replace('.', ','));
+  openSheet(`
+    <header><h3>Objectif de poids</h3><button class="icon-btn" data-action="close">Fermer</button></header>
+    <p class="small muted" style="margin:0">Indique ton poids de départ et le poids que tu vises.</p>
+    <div class="grid2">
+      <label>Poids de départ (kg)<input type="text" inputmode="decimal" id="g-start" value="${val(s.goalStart ?? firstW)}" placeholder="90" autocomplete="off"></label>
+      <label>Poids cible (kg)<input type="text" inputmode="decimal" id="g-target" value="${val(s.goalWeight)}" placeholder="80" autocomplete="off"></label>
+    </div>
+    <div class="small muted">Départ laissé vide : ta première pesée sert de référence.</div>
+    <div id="g-err" class="small" style="color:var(--danger)"></div>
+    <button class="btn primary block" id="g-save">Enregistrer</button>
+    ${s.goalWeight ? '<button class="btn danger block" id="g-del">Supprimer l\'objectif</button>' : ''}`);
+  $('#g-save').addEventListener('click', async () => {
+    const start = parseNumber($('#g-start').value), target = parseNumber($('#g-target').value);
+    const from = start ?? firstW;
+    if (Number.isNaN(start) || Number.isNaN(target) || target == null) { $('#g-err').textContent = 'Indique ton poids cible (nombre).'; return; }
+    if (from == null) { $('#g-err').textContent = 'Indique ton poids de départ, ou enregistre d\'abord une pesée.'; return; }
+    if (target < 30 || target > 300 || from < 30 || from > 300) { $('#g-err').textContent = 'Valeur peu plausible : vérifie la saisie.'; return; }
+    if (target >= from) { $('#g-err').textContent = 'Le poids cible doit être inférieur au poids de départ.'; return; }
+    s.goalWeight = target; s.goalStart = start;
+    await persist(); closeSheet(); render(); toast('Objectif enregistré');
+  });
+  $('#g-del')?.addEventListener('click', async () => {
+    s.goalWeight = null; s.goalStart = null;
+    await persist(); closeSheet(); render(); toast('Objectif supprimé', 'remove');
+  });
+}
+
 function renderTrack() {
   const today = todayISO();
+  const st = computeStats(state, today);
   const weights = state.body.filter((b) => b.weight != null).map((b) => ({ date: b.date, value: b.weight }));
   const last = weights[weights.length - 1], first = weights[0];
   const ago7 = [...weights].reverse().find((w) => w.date <= shiftDate(today, -6) || w === first);
@@ -324,6 +487,7 @@ function renderTrack() {
   view.innerHTML = `
     <h1>Suivi</h1>
     ${waistAge == null || waistAge >= 7 ? `<div class="alert">${waistAge == null ? 'Aucun tour de taille noté.' : `Dernier tour de taille il y a ${waistAge} jours.`} Mesure-le au nombril et prends ta photo de la semaine.</div>` : ''}
+    ${levelHTML()}
     <h2>Mesure</h2>
     <div class="card stack">
       <label>Date<input type="date" id="b-date" value="${today}" max="${today}"></label>
@@ -337,6 +501,7 @@ function renderTrack() {
     </div>
     <h2>Courbe de poids</h2>
     <div class="card">${chartSVG(weights)}<div class="small muted">Points : pesées · trait : moyenne sur 7 jours</div></div>
+    ${goalHTML(st)}
     <h2>Bilan</h2>
     <div class="stats">
       <div class="stat"><span class="small muted">Dernier poids</span><b>${last ? fmt(last.value) + ' kg' : '—'}</b></div>
@@ -346,6 +511,8 @@ function renderTrack() {
       <div class="stat"><span class="small muted">Moyenne kcal (7 j)</span><b>${ws.days ? ws.kcal : '—'}</b></div>
       <div class="stat"><span class="small muted">Moyenne protéines (7 j)</span><b>${ws.days ? fmt(ws.prot) + ' g' : '—'}</b></div>
     </div>
+    ${recapHTML()}
+    ${trophiesHTML(st)}
     ${recent.length ? `<h2>Dernières mesures</h2><div class="list">${recent.map((b) => `
       <button type="button" class="item" data-action="body-del" data-id="${esc(b.id)}">
         <span>${new Date(b.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
@@ -454,6 +621,13 @@ function renderSettings() {
           <option value="off" ${s.sounds === false ? 'selected' : ''}>Désactivés</option>
         </select>
       </label>
+      <label>Ton des messages
+        <select id="s-tone">
+          <option value="mix" ${(s.tone || 'mix') === 'mix' ? 'selected' : ''}>Mélangé</option>
+          <option value="warm" ${s.tone === 'warm' ? 'selected' : ''}>Sobre et chaleureux</option>
+          <option value="fun" ${s.tone === 'fun' ? 'selected' : ''}>Fun, avec des emojis</option>
+        </select>
+      </label>
       <label>Thème
         <select id="s-theme">
           <option value="dark" ${s.theme === 'dark' ? 'selected' : ''}>Sombre</option>
@@ -492,9 +666,10 @@ function renderSettings() {
     if (p > 0) state.settings.prot = p;
     state.settings.theme = $('#s-theme').value;
     state.settings.sounds = $('#s-sounds').value !== 'off';
+    state.settings.tone = $('#s-tone').value;
     applyTheme(); persist(); sfx.tap();
   };
-  ['#s-kcal', '#s-prot', '#s-theme', '#s-sounds'].forEach((id) => $(id).addEventListener('change', save));
+  ['#s-kcal', '#s-prot', '#s-theme', '#s-sounds', '#s-tone'].forEach((id) => $(id).addEventListener('change', save));
   $('#import').addEventListener('change', onImport);
   bindSyncSettings();
   $('#update-now').addEventListener('click', forceUpdate);
@@ -744,6 +919,8 @@ document.addEventListener('click', (e) => {
     export: onExport,
     'body-del': async () => { if (!confirm('Supprimer cette mesure ?')) return; state.body = state.body.filter((b) => b.id !== id); await persist(); render(); toast('Mesure supprimée', 'remove'); },
     'idea-add': () => logIdea(Number(el.dataset.i)),
+    goal: sheetGoal,
+    trophy: () => sheetTrophy(id),
     'clean-seed': async () => {
       const del = seedCleanable();
       if (!del.length || !confirm(`Supprimer ${del.length} aliments d'exemple jamais utilisés ?`)) return;
@@ -791,7 +968,9 @@ async function init() {
   state = await loadState();
   if (reconcileEntries(state.entries, state.foods)) await persist();
   applyTheme();
+  markDayAnnounced();
   render(true);
+  setTimeout(checkProgress, 900);
   askPersistent();
   if (ls.get('syncDirty')) doSync();
   watchUpdates();
