@@ -1,9 +1,10 @@
 import {
-  MEALS, MACROS, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
+  MEALS, MACROS, emptyMacros, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
   searchFoods, validateState, uid, dayStatus, weekOf, reconcileEntries,
   ZONES, addStock, deductStock, stockOf, daysLeft, findByBarcode, normalizeBarcode,
-  upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals,
+  upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals, recentFoods, lastGrams,
 } from './logic.js';
+import { GOALS, ACTIVITY, PACES, ageOf, validateProfile, estimate, weeksToGoal } from './profile.js';
 import { loadState, saveState, askPersistent } from './store.js';
 import { startScanner } from './scanner.js';
 import { isSeedFood } from './seed.js';
@@ -13,7 +14,7 @@ import { APP_VERSION } from './version.js';
 import { sfx, setSoundEnabled } from './sound.js';
 import {
   computeStats, TROPHIES, TROPHY_GROUPS, trophyProgress, unlockedTrophies, levelOf,
-  pickMessage, seedOf, situation, weekRecap, goalKey,
+  pickMessage, seedOf, situation, weekRecap, goalKey, goalEta,
 } from './motivation.js';
 
 let state;
@@ -76,14 +77,15 @@ async function checkProgress() {
 }
 
 function showPop() {
-  if (sheet.open || !pendingPop.length) return;
+  if (sheet.open || document.body.classList.contains('wz-open') || !pendingPop.length) return;
   const ids = [...new Set(pendingPop)]; pendingPop = [];
   const list = ids.map((id) => TROPHIES.find((t) => t.id === id)).filter(Boolean);
   if (!list.length) return;
   const el = $('#trophy-pop');
-  const names = list.map((t) => esc(t.name)).join(' · ');
+  const names = list.length <= 2 ? list.map((t) => esc(t.name)).join(' · ') : 'Grâce à ton historique';
   el.innerHTML = `<div class="pop-card"><div class="pop-icon">${list.length === 1 ? list[0].icon : '🏆'}</div>
-    <div><b>${list.length === 1 ? 'Trophée débloqué !' : `${list.length} trophées débloqués !`}</b><span>${names}</span></div></div>`;
+    <div><b>${list.length === 1 ? 'Trophée débloqué !' : `${list.length} trophées débloqués !`}</b><span>${names}</span></div>
+    ${list.length > 1 ? '<button type="button" class="pop-btn" data-action="open-trophies">Voir</button>' : ''}</div>`;
   if (!reduceMotion()) {
     const colors = ['#6ee7a8', '#ffb454', '#6aa8ff', '#b79cff', '#f2d56b', '#ff7a7a'];
     el.insertAdjacentHTML('beforeend', Array.from({ length: 28 }, (_, i) =>
@@ -108,9 +110,18 @@ function cheerHTML() {
   const chips = [
     st.log.current >= 1 ? `<span class="streak-chip">🔥 ${plural(st.log.current, 'jour')} de suivi</span>` : '',
     st.budget.current >= 1 ? `<span class="streak-chip">🎯 ${plural(st.budget.current, 'jour')} dans le budget</span>` : '',
-    st.log.current >= 2 ? `<span class="streak-chip dim">🃏 Joker ${st.log.jokerLeft ? 'disponible' : 'utilisé cette semaine'}</span>` : '',
+    st.log.current >= 2 ? `<span class="streak-chip dim" title="Un jour raté par semaine ne casse pas ta série">🃏 ${st.log.jokerLeft ? 'Joker dispo' : 'Joker pris'}</span>` : '',
   ].join('');
   return `<div class="cheer"><p>${esc(text)}</p>${chips ? `<div class="streaks">${chips}</div>` : ''}</div>`;
+}
+
+/** Rappel d'export, repoussable : remplace l'ancien message qui recouvrait la liste des repas. */
+function exportNagHTML() {
+  const last = localStorage.getItem('lastExport');
+  const due = state.entries.length > 20 && (!last || Date.now() - new Date(last) > 14 * 864e5);
+  if (!due || Date.now() < (ls.get('exportNagUntil') || 0)) return '';
+  return `<div class="alert nag"><span>Pense à exporter tes données : elles ne sont que sur ce téléphone.</span>
+    <div class="row"><button class="btn" data-action="goto-settings">Exporter</button><button class="icon-btn" data-action="nag-later">Plus tard</button></div></div>`;
 }
 
 function applyTheme() {
@@ -136,7 +147,7 @@ function renderToday() {
     const list = entries.filter((e) => e.meal === m.id);
     const mt = totals(list);
     return `
-      <div class="meal-head"><b>${m.label}</b><span>${list.length ? `${mt.kcal} kcal · ${fmt(mt.prot)} g prot` : ''}</span></div>
+      <div class="meal-head"><b>${m.label}</b><span>${list.length ? `${mt.kcal} kcal · ${fmt(mt.prot)} g prot` : ''}${list.some((e) => e.foodId) ? ` <button type="button" class="star-btn" data-action="save-meal" data-meal="${m.id}" aria-label="Enregistrer ce repas">☆</button>` : ''}</span></div>
       <div class="list">
         ${list.map((e) => `
           <button type="button" class="item ${e.id === lastAddedId ? 'new' : ''}" data-action="entry-menu" data-id="${esc(e.id)}">
@@ -170,6 +181,7 @@ function renderToday() {
     <div class="muted small" style="margin-top:4px">${esc(dateLabel(date))}</div>
     <div class="week">${week}</div>
     ${date === todayISO() ? cheerHTML() : ''}
+    ${exportNagHTML()}
     <div class="card hero s-${st}">
       <div class="hero-top">
         <div class="ring" role="img" aria-label="${t.kcal} kcal sur ${state.settings.kcal}">
@@ -364,12 +376,16 @@ function sheetCourses(zone = 'frigo', picked = null) {
 
 
 /* ---------- Écran Suivi ---------- */
-function chartSVG(points) {
-  const pts = points.slice(-60);
-  if (pts.length < 2) return '<p class="muted small" style="margin:8px 0 0">La courbe apparaît dès la deuxième pesée.</p>';
+let chartDays = 90, showAllTrophies = false;
+
+function chartSVG(points, goal = null) {
+  const pts = chartDays ? points.filter((p) => p.date >= shiftDate(todayISO(), -chartDays)) : points;
+  if (pts.length < 2) return `<p class="muted small" style="margin:8px 0 0">${points.length < 2 ? 'La courbe apparaît dès la deuxième pesée.' : 'Pas assez de pesées sur cette période.'}</p>`;
   const avg = movingAverage(pts, 7);
   const W = 340, H = 170, L = 34, R = 8, T = 10, B = 22;
   const vals = pts.map((p) => p.value).concat(avg.map((p) => p.value));
+  const near = goal != null && goal >= Math.min(...vals) - 4 && goal <= Math.max(...vals) + 4;
+  if (near) vals.push(goal);
   const lo = Math.floor((Math.min(...vals) - 0.3) * 2) / 2, hi = Math.ceil((Math.max(...vals) + 0.3) * 2) / 2;
   const t0 = new Date(pts[0].date + 'T12:00:00').getTime(), t1 = new Date(pts[pts.length - 1].date + 'T12:00:00').getTime();
   const x = (d) => L + ((new Date(d + 'T12:00:00').getTime() - t0) / Math.max(1, t1 - t0)) * (W - L - R);
@@ -378,6 +394,7 @@ function chartSVG(points) {
   const fd = (iso) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de poids, de ${fmt(pts[0].value)} à ${fmt(pts[pts.length - 1].value)} kg">
     ${ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 4}" y="${y(v) + 3}" text-anchor="end">${fmt(v)}</text>`).join('')}
+    ${near ? `<line class="goal-line" x1="${L}" x2="${W - R}" y1="${y(goal)}" y2="${y(goal)}"/><text class="goal-txt" x="${W - R}" y="${y(goal) - 4}" text-anchor="end">Objectif ${fmt(goal)}</text>` : ''}
     ${pts.map((p) => `<circle class="raw" cx="${x(p.date)}" cy="${y(p.value)}" r="2.5"/>`).join('')}
     <polyline class="avg" points="${avg.map((p) => `${x(p.date)},${y(p.value)}`).join(' ')}"/>
     <text x="${L}" y="${H - 6}">${fd(pts[0].date)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${fd(pts[pts.length - 1].date)}</text>
@@ -400,34 +417,46 @@ function goalHTML(st) {
   if (!g) return `<h2>Objectif</h2><div class="card stack"><p class="small muted" style="margin:0">Fixe un poids cible : l'appli suit ta progression et t'encourage en chemin.</p><button class="btn primary block" data-action="goal">Définir mon objectif</button></div>`;
   const edit = '<button class="btn block" data-action="goal">Modifier l\'objectif</button>';
   if (st.startWeight == null || st.curAvg == null) return `<h2>Objectif</h2><div class="card stack"><div>Poids cible : <b>${fmt(g)} kg</b></div><div class="small muted">Enregistre une première pesée pour suivre ta progression.</div>${edit}</div>`;
-  if (st.goal == null) return `<h2>Objectif</h2><div class="card stack"><div class="small warn">Ton poids cible (${fmt(g)} kg) doit être inférieur à ton poids de départ (${fmt(st.startWeight)} kg).</div>${edit}</div>`;
-  const left = Math.max(0, Math.round((st.curAvg - g) * 10) / 10), pct = Math.round(st.goalFrac * 100);
+  if (st.goal == null) return `<h2>Objectif</h2><div class="card stack"><div class="small warn">Ton poids cible (${fmt(g)} kg) doit être différent de ton poids de départ (${fmt(st.startWeight)} kg).</div>${edit}</div>`;
+  const gain = g > st.startWeight;
+  const left = Math.max(0, Math.round((gain ? g - st.curAvg : st.curAvg - g) * 10) / 10), pct = Math.round(st.goalFrac * 100);
   const text = msg(goalKey(st.goalFrac), `goal:${weekOf(todayISO())[0]}`, { left: fmt(left) });
+  const eta = left > 0 ? goalEta(state.body.filter((b) => b.weight != null).map((b) => ({ date: b.date, value: b.weight })), g, todayISO()) : null;
+  const etaTxt = eta ? `À ce rythme (${eta.perWeek > 0 ? '+' : ''}${fmt(eta.perWeek)} kg par semaine) : objectif vers le ${new Date(eta.date + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}.` : '';
   return `<h2>Objectif</h2><div class="card stack">
     <div class="row between"><span class="small muted">Départ ${fmt(st.startWeight)} kg</span><b>${pct} %</b><span class="small muted">Cible ${fmt(g)} kg</span></div>
     <div class="bar goal"><i style="width:${pct}%"></i></div>
     <div>${esc(text)}</div>
     <div class="small muted">Poids actuel (moyenne 7 jours) : ${fmt(st.curAvg)} kg${left > 0 ? ` · reste ${fmt(left)} kg` : ''}</div>
+    ${etaTxt ? `<div class="eta">🗓️ ${etaTxt}</div>` : ''}
     ${edit}</div>`;
 }
 
 function recapHTML() {
   const today = todayISO(), r = weekRecap(state, today);
   const lines = r.days ? [
-    `<li><b>${r.ok} / ${r.days}</b> jours dans le budget</li>`,
     `<li><b>${r.protDays}</b> ${r.protDays > 1 ? 'jours' : 'jour'} avec l'objectif de protéines atteint</li>`,
     r.trend != null ? `<li>Poids (moyenne) : <b class="${r.trend <= 0 ? 'down' : 'up'}">${r.trend > 0 ? '+' : ''}${fmt(r.trend)} kg</b> en 7 jours</li>` : '',
   ].join('') : '';
   return `<h2>Ta semaine</h2><div class="card"><p class="recap-msg">${esc(msg(r.key, `${weekOf(today)[0]}:${r.key}`))}</p>${lines ? `<ul class="recap">${lines}</ul>` : ''}</div>`;
 }
 
-function trophiesHTML(st) {
-  return TROPHY_GROUPS.map((g) => `<h2>${g.label}</h2><div class="trophies">${TROPHIES.filter((t) => t.group === g.id).map((t) => {
-    const done = t.id in (state.trophies || {}), p = trophyProgress(t, st);
-    return `<button type="button" class="trophy ${done ? 'done' : 'locked'}" data-action="trophy" data-id="${t.id}">
+function trophyCard(t, st) {
+  const done = t.id in (state.trophies || {}), p = trophyProgress(t, st);
+  return `<button type="button" class="trophy ${done ? 'done' : 'locked'}" data-action="trophy" data-id="${t.id}">
       <span class="t-ico">${t.icon}</span><span class="t-name">${esc(t.name)}</span>
       ${done ? '<span class="t-ok">Débloqué</span>' : `<div class="bar"><i style="width:${Math.round((p.value / p.target) * 100)}%"></i></div>`}</button>`;
-  }).join('')}</div>`).join('');
+}
+
+/** Les trophées : les 3 plus proches d'être débloqués par défaut, la vitrine complète sur demande. */
+function trophiesHTML(st) {
+  const have = state.trophies || {};
+  const soon = TROPHIES.filter((t) => !(t.id in have) && !(t.id.startsWith('goal') && !state.settings.goalWeight))
+    .map((t) => ({ t, r: trophyProgress(t, st).value / t.target }))
+    .sort((a, b) => b.r - a.r).slice(0, 3).map((x) => x.t);
+  const toggle = `<button class="btn block" style="margin-top:12px" data-action="trophies-toggle">${showAllTrophies ? 'Réduire' : `Voir tous les trophées (${unlockedIds().length} / ${TROPHIES.length})`}</button>`;
+  if (!showAllTrophies) return `<h2 id="trophies-top">Prochains trophées</h2><div class="trophies">${soon.map((t) => trophyCard(t, st)).join('') || '<div class="card muted" style="grid-column:1/-1">Tous les trophées sont débloqués. Bravo !</div>'}</div>${toggle}`;
+  return `<span id="trophies-top"></span>${TROPHY_GROUPS.map((g) => `<h2>${g.label}</h2><div class="trophies">${TROPHIES.filter((t) => t.group === g.id).map((t) => trophyCard(t, st)).join('')}</div>`).join('')}${toggle}`;
 }
 
 function sheetTrophy(id) {
@@ -448,7 +477,7 @@ function sheetGoal() {
   const val = (n) => (n == null ? '' : String(n).replace('.', ','));
   openSheet(`
     <header><h3>Objectif de poids</h3><button class="icon-btn" data-action="close">Fermer</button></header>
-    <p class="small muted" style="margin:0">Indique ton poids de départ et le poids que tu vises.</p>
+    <p class="small muted" style="margin:0">Indique ton poids de départ et le poids que tu vises (en dessous ou au-dessus, selon ton objectif).</p>
     <div class="grid2">
       <label>Poids de départ (kg)<input type="text" inputmode="decimal" id="g-start" value="${val(s.goalStart ?? firstW)}" placeholder="90" autocomplete="off"></label>
       <label>Poids cible (kg)<input type="text" inputmode="decimal" id="g-target" value="${val(s.goalWeight)}" placeholder="80" autocomplete="off"></label>
@@ -463,7 +492,7 @@ function sheetGoal() {
     if (Number.isNaN(start) || Number.isNaN(target) || target == null) { $('#g-err').textContent = 'Indique ton poids cible (nombre).'; return; }
     if (from == null) { $('#g-err').textContent = 'Indique ton poids de départ, ou enregistre d\'abord une pesée.'; return; }
     if (target < 30 || target > 300 || from < 30 || from > 300) { $('#g-err').textContent = 'Valeur peu plausible : vérifie la saisie.'; return; }
-    if (target >= from) { $('#g-err').textContent = 'Le poids cible doit être inférieur au poids de départ.'; return; }
+    if (target === from) { $('#g-err').textContent = 'Le poids cible doit être différent du poids de départ.'; return; }
     s.goalWeight = target; s.goalStart = start;
     await persist(); closeSheet(); render(); toast('Objectif enregistré');
   });
@@ -500,7 +529,9 @@ function renderTrack() {
       <button class="btn primary block" id="b-save">Enregistrer</button>
     </div>
     <h2>Courbe de poids</h2>
-    <div class="card">${chartSVG(weights)}<div class="small muted">Points : pesées · trait : moyenne sur 7 jours</div></div>
+    <div class="card">
+      <div class="chips" style="margin-bottom:8px">${[[30, '30 j'], [90, '90 j'], [0, 'Tout']].map(([d, l]) => `<button type="button" class="chip ${chartDays === d ? 'on' : ''}" data-action="chart-range" data-days="${d}">${l}</button>`).join('')}</div>
+      ${chartSVG(weights, state.settings.goalWeight)}<div class="small muted">Points : pesées · trait : moyenne sur 7 jours${state.settings.goalWeight ? ' · pointillés : objectif' : ''}</div></div>
     ${goalHTML(st)}
     <h2>Bilan</h2>
     <div class="stats">
@@ -604,11 +635,198 @@ function bindSyncSettings() {
   });
 }
 
+/* ---------- Profil et écran de bienvenue ---------- */
+const latestWeight = () => [...state.body].reverse().find((b) => b.weight != null)?.weight ?? null;
+
+function profileCardHTML() {
+  const p = state.profile;
+  if (!p) return `<h2>Mon profil</h2><div class="card stack"><p class="small muted" style="margin:0">Renseigne ta taille, ton poids et ton objectif : l'appli estime ton budget calorique et tes protéines.</p><button class="btn primary block" data-action="wizard">Calculer mon budget calorique</button></div>`;
+  const w = latestWeight(), goal = GOALS.find((g) => g.id === p.goal), act = ACTIVITY.find((a) => a.id === p.activity);
+  const est = w ? estimate(p, w) : null;
+  const differs = est && (Math.abs(est.kcal - state.settings.kcal) >= 50 || est.prot !== state.settings.prot);
+  return `<h2>Mon profil</h2><div class="card stack">
+    <div class="prof-grid">
+      <div class="wide"><span class="small muted">Objectif</span><b>${goal.icon} ${goal.label}</b></div>
+      <div><span class="small muted">Taille</span><b>${fmt(p.height)} cm</b></div>
+      <div><span class="small muted">Poids actuel</span><b>${w != null ? fmt(w) + ' kg' : '—'}</b></div>
+      <div><span class="small muted">Âge</span><b>${ageOf(p.birthDate)} ans</b></div>
+      <div><span class="small muted">Activité</span><b>${act.label}</b></div>
+    </div>
+    ${est ? `<div class="est-box"><span class="small muted">Budget conseillé aujourd'hui</span><b>${est.kcal} kcal · ${est.prot} g de protéines</b>
+      <span class="small muted">Métabolisme de base ${est.bmr} kcal · dépense totale ${est.tdee} kcal</span></div>` : '<div class="small muted">Enregistre une pesée pour recalculer ton budget.</div>'}
+    ${differs ? `<button class="btn primary block" data-action="apply-estimate">Appliquer ${est.kcal} kcal et ${est.prot} g de protéines</button><div class="small muted">Ton budget actuel : ${state.settings.kcal} kcal et ${state.settings.prot} g.</div>` : est ? '<div class="small down">Ton budget actuel correspond à l\'estimation.</div>' : ''}
+    <button class="btn block" data-action="wizard">Modifier mon profil</button></div>`;
+}
+
+/** Formulaire en plusieurs étapes (plein écran) : bienvenue au premier lancement, puis modification du profil. */
+function openWizard({ first = false } = {}) {
+  const p = state.profile;
+  const W = {
+    first, step: first ? 'intro' : 'goal', goal: p?.goal ?? null, sex: p?.sex ?? null, birthDate: p?.birthDate ?? '',
+    height: p?.height ?? '', weight: latestWeight() ?? '', target: state.settings.goalWeight ?? '',
+    activity: p?.activity ?? null, pace: p?.pace ?? null, kcal: null, est: null, err: '',
+  };
+  const order = () => ['goal', 'you', 'body', 'activity', ...(W.goal === 'maintain' ? [] : ['pace']), 'result'];
+  const num = (v) => parseNumber(String(v ?? ''));
+  const profile = () => ({ sex: W.sex, birthDate: W.birthDate, height: num(W.height), activity: W.activity, goal: W.goal, pace: W.goal === 'maintain' ? null : W.pace });
+  let el = $('#welcome');
+  if (!el) { el = document.createElement('div'); el.id = 'welcome'; document.body.appendChild(el); }
+  document.body.classList.add('wz-open');
+  const close = () => { el.remove(); document.body.classList.remove('wz-open'); setTimeout(showPop, 300); };
+
+  const check = () => {
+    switch (W.step) {
+      case 'goal': return W.goal ? '' : 'Choisis ton objectif pour continuer.';
+      case 'you': {
+        if (!W.sex) return 'Indique ton sexe : il sert au calcul du métabolisme.';
+        const a = ageOf(W.birthDate);
+        return a >= 14 && a <= 100 ? '' : 'Indique ta date de naissance (entre 14 et 100 ans).';
+      }
+      case 'body': {
+        const h = num(W.height), w = num(W.weight), t = num(W.target);
+        if (!(h >= 120 && h <= 230)) return 'Taille peu plausible (entre 120 et 230 cm).';
+        if (!(w >= 30 && w <= 300)) return 'Poids peu plausible (entre 30 et 300 kg).';
+        if (W.goal === 'maintain') return '';
+        if (!(t >= 30 && t <= 300)) return 'Indique ton poids cible.';
+        if (W.goal === 'loss' ? t >= w : t <= w) return W.goal === 'loss' ? 'Ton poids cible doit être inférieur à ton poids actuel.' : 'Ton poids cible doit être supérieur à ton poids actuel.';
+        return '';
+      }
+      case 'activity': return W.activity ? '' : "Choisis ton niveau d'activité.";
+      case 'pace': return W.pace ? '' : 'Choisis un rythme.';
+      default: return '';
+    }
+  };
+
+  const opts = (field, list) => `<div class="opts">${list.map((o) => `
+    <button type="button" class="opt ${String(W[field]) === String(o.id) ? 'on' : ''}" data-opt="${field}" data-v="${o.id}">
+      ${o.icon ? `<span class="opt-ico">${o.icon}</span>` : ''}<span class="opt-txt"><b>${o.label}</b><small>${o.desc}</small></span><span class="opt-check"></span>
+    </button>`).join('')}</div>`;
+  const field = (id, label, value, extra = '') => `<label class="wz-field">${label}<input type="text" inputmode="decimal" data-f="${id}" value="${esc(String(value ?? '').replace('.', ','))}" autocomplete="off" ${extra}></label>`;
+
+  const content = () => {
+    const w = num(W.weight);
+    switch (W.step) {
+      case 'intro': return `<div class="wz-hero"><div class="wz-logo">🥗</div><h1>Bienvenue</h1>
+        <p>Quelques questions pour estimer précisément ton budget calorique et tes protéines, selon ton objectif.</p>
+        <ul class="wz-points"><li><span>🔒</span>Tes données restent sur ton téléphone</li><li><span>⏱️</span>Moins de deux minutes</li><li><span>✏️</span>Modifiable à tout moment dans Réglages</li></ul></div>`;
+      case 'goal': return `<h1>Quel est ton objectif ?</h1><p class="wz-sub">On adapte ton budget calorique à ce que tu vises.</p>${opts('goal', GOALS)}`;
+      case 'you': return `<h1>Parlons de toi</h1><p class="wz-sub">Ces informations servent au calcul de ton métabolisme (formule de Mifflin-St Jeor).</p>
+        <div class="wz-label">Sexe</div>
+        <div class="seg">${[['f', 'Femme'], ['m', 'Homme']].map(([v, l]) => `<button type="button" class="${W.sex === v ? 'on' : ''}" data-opt="sex" data-v="${v}">${l}</button>`).join('')}</div>
+        <label class="wz-field">Date de naissance<input type="date" data-f="birthDate" value="${esc(W.birthDate)}" min="1920-01-01" max="${todayISO()}"></label>`;
+      case 'body': return `<h1>Tes mensurations</h1><p class="wz-sub">Pèse-toi le matin si possible : c'est la mesure la plus fiable.</p>
+        <div class="grid2">${field('height', 'Taille (cm)', W.height, 'placeholder="175"')}${field('weight', 'Poids actuel (kg)', W.weight, 'placeholder="80"')}</div>
+        ${W.goal !== 'maintain' ? field('target', 'Poids visé (kg)', W.target, `placeholder="${W.goal === 'loss' ? '72' : '85'}"`) : ''}`;
+      case 'activity': return `<h1>Ton niveau d'activité</h1><p class="wz-sub">Compte ton quotidien et ton sport, sur une semaine typique.</p>${opts('activity', ACTIVITY)}`;
+      case 'pace': return `<h1>À quel rythme ?</h1><p class="wz-sub">${W.goal === 'loss' ? 'Un rythme modéré se tient mieux dans la durée et préserve le muscle.' : 'Une prise lente limite la graisse en plus du muscle.'}</p>
+        ${opts('pace', PACES[W.goal].map((x) => ({ id: x.v, label: x.label, desc: `${x.desc} · environ ${W.goal === 'loss' ? '−' : '+'}${Math.round(x.v * 1100)} kcal par jour` })))}`;
+      case 'result': {
+        const e = W.est, delta = Math.round((W.kcal - e.tdee) / 10) * 10 || 0, weeks = weeksToGoal(profile(), w, num(W.target));
+        return `<div class="wz-result"><span class="wz-eyebrow">Ton budget quotidien</span>
+          <div class="wz-big"><span id="wz-kcal">${W.kcal}</span><small>kcal</small></div>
+          <div class="stepper"><button type="button" data-act="kcal-" aria-label="Moins 50 kcal">−</button><span>ajuster</span><button type="button" data-act="kcal+" aria-label="Plus 50 kcal">+</button></div>
+          <div class="wz-rows">
+            <div><span>Métabolisme de base</span><b>${e.bmr} kcal</b></div>
+            <div><span>Dépense quotidienne</span><b>${e.tdee} kcal</b></div>
+            <div><span>Écart avec ton objectif</span><b id="wz-delta">${delta > 0 ? '+' : ''}${delta} kcal</b></div>
+            <div><span>Protéines conseillées</span><b>${e.prot} g</b></div>
+          </div>
+          ${weeks ? `<div class="wz-note">🎯 Environ <b>${weeks} semaine${weeks > 1 ? 's' : ''}</b> pour atteindre ${fmt(num(W.target))} kg à ce rythme.</div>` : ''}
+          ${e.notes.map((n) => `<div class="wz-note warn">${esc(n)}</div>`).join('')}
+          <p class="small muted">Estimation indicative, pas un avis médical. Après 2 à 3 semaines, ajuste selon l'évolution de ta courbe de poids.</p></div>`;
+      }
+      default: return '';
+    }
+  };
+
+  const draw = (animate = true) => {
+    const steps = order(), idx = steps.indexOf(W.step);
+    const label = W.step === 'intro' ? 'Commencer' : W.step === 'result' ? "C'est parti" : 'Continuer';
+    el.innerHTML = `
+      <div class="wz-top">
+        ${W.step === 'intro' ? '<span></span>' : '<button type="button" class="wz-round" data-act="back" aria-label="Retour">‹</button>'}
+        ${W.step === 'intro' ? '<span></span>' : `<div class="wz-dots">${steps.map((s, i) => `<i class="${i <= idx ? 'on' : ''}"></i>`).join('')}</div>`}
+        ${W.first ? '<span></span>' : '<button type="button" class="wz-round" data-act="cancel" aria-label="Fermer">✕</button>'}
+      </div>
+      <div class="wz-body ${animate ? 'wz-in' : ''}">${content()}</div>
+      <div class="wz-foot">
+        <div class="wz-err" id="wz-err">${esc(W.err)}</div>
+        <button type="button" class="btn primary block wz-cta" data-act="next">${label}</button>
+        ${W.step === 'intro' ? '<button type="button" class="wz-skip" data-act="skip">Passer pour l\'instant</button>' : ''}
+      </div>`;
+    el.querySelectorAll('[data-f]').forEach((i) => i.addEventListener('input', () => { W[i.dataset.f] = i.value; }));
+    el.querySelector('.wz-body').scrollTop = 0;
+    if (W.step === 'result' && animate && !reduceMotion()) countUp($('#wz-kcal'), W.kcal);
+  };
+  const go = (step) => {
+    W.step = step; W.err = '';
+    if (step === 'result') { W.est = estimate(profile(), num(W.weight)); W.kcal = W.est.kcal; }
+    draw();
+  };
+  const finish = async () => {
+    const pr = profile(), weight = num(W.weight), target = W.goal === 'maintain' ? null : num(W.target);
+    const err = validateProfile(pr);
+    if (err) { W.err = err; $('#wz-err').textContent = err; return; }
+    const s = state.settings;
+    state.profile = pr;
+    s.kcal = W.kcal; s.prot = W.est.prot; s.onboarded = true;
+    if (latestWeight() !== weight) upsertBody(state.body, { date: todayISO(), weight });
+    if (target == null) { s.goalWeight = null; s.goalStart = null; }
+    else if (s.goalWeight !== target) {
+      const startOk = s.goalStart != null && (target < s.goalStart ? W.goal === 'loss' : W.goal === 'gain');
+      s.goalWeight = target; s.goalStart = startOk ? s.goalStart : weight;
+    }
+    await persist(); close(); render(true); markDayAnnounced();
+    toast(first ? 'Profil enregistré : ton budget est prêt' : 'Profil mis à jour');
+  };
+  const next = async () => {
+    if (W.step === 'intro') return go('goal');
+    const e = check();
+    if (e) { W.err = e; $('#wz-err').textContent = e; sfx.error(); return; }
+    if (W.step === 'result') return finish();
+    const steps = order();
+    go(steps[steps.indexOf(W.step) + 1]);
+  };
+  el.onclick = async (ev) => {
+    const o = ev.target.closest('[data-opt]');
+    if (o) {
+      const f = o.dataset.opt, v = o.dataset.v;
+      W[f] = f === 'pace' ? Number(v) : v; W.err = '';
+      if (f === 'goal' && W.goal !== 'maintain' && !PACES[W.goal].some((x) => x.v === W.pace)) W.pace = null;
+      el.querySelectorAll(`[data-opt="${f}"]`).forEach((b) => b.classList.toggle('on', b === o));
+      $('#wz-err').textContent = ''; sfx.tap(); return;
+    }
+    const a = ev.target.closest('[data-act]')?.dataset.act;
+    if (a === 'next') next();
+    else if (a === 'back') { const steps = order(), i = steps.indexOf(W.step); if (i > 0) go(steps[i - 1]); else if (W.first) go('intro'); else close(); }
+    else if (a === 'cancel') close();
+    else if (a === 'skip') { state.settings.onboarded = true; await persist(); close(); render(true); }
+    else if (a === 'kcal-' || a === 'kcal+') {
+      W.kcal = Math.min(5000, Math.max(1000, W.kcal + (a === 'kcal+' ? 50 : -50)));
+      const d = Math.round((W.kcal - W.est.tdee) / 10) * 10 || 0;
+      $('#wz-kcal').textContent = W.kcal; $('#wz-delta').textContent = `${d > 0 ? '+' : ''}${d} kcal`; sfx.tap();
+    }
+  };
+  draw();
+}
+
+function countUp(node, to, dur = 900) {
+  if (!node) return;
+  const t0 = performance.now();
+  const tick = (now) => {
+    const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    node.textContent = Math.round(to * e);
+    if (k < 1 && document.body.contains(node)) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 /* ---------- Réglages ---------- */
 function renderSettings() {
   const s = state.settings;
   view.innerHTML = `
     <h1>Réglages</h1>
+    ${profileCardHTML()}
     <h2>Objectifs</h2>
     <div class="card stack">
       <div class="grid2">
@@ -640,7 +858,7 @@ function renderSettings() {
     <div class="card stack">
       <p class="small muted" style="margin:0">Tes données sont uniquement sur cet iPhone. Exporte-les régulièrement : le fichier s'enregistre dans Fichiers / iCloud Drive.</p>
       <button class="btn primary block" data-action="export">Exporter mes données</button>
-      <label class="btn block" style="flex-direction:row;justify-content:center;color:var(--text)">Importer un fichier<input type="file" id="import" accept="application/json,.json" hidden></label>
+      <label class="btn block" style="flex-direction:row;justify-content:center;align-items:center;color:var(--text)">Importer un fichier<input type="file" id="import" accept="application/json,.json" hidden></label>
       <div class="small muted" id="backup-info"></div>
     </div>
     <h2>Synchronisation avec Claude</h2>
@@ -692,6 +910,7 @@ function openSheet(html) { sheet.innerHTML = `<div class="sheet">${html}</div>`;
 function closeSheet() { if (sheet.open) sheet.close(); }
 
 function sheetAdd(meal) {
+  const prevCount = state.entries.filter((e) => e.date === shiftDate(date, -1) && e.meal === meal).length;
   openSheet(`
     <header><h3>Ajouter · ${MEALS.find((m) => m.id === meal).label}</h3><button class="icon-btn" data-action="close">Fermer</button></header>
     <button class="btn primary block" data-action="scan" data-mode="meal" data-meal="${meal}">Scanner un code-barres</button>
@@ -699,17 +918,102 @@ function sheetAdd(meal) {
       <button class="btn" data-action="quick" data-meal="${meal}">Saisie rapide</button>
       <button class="btn" data-action="food-new-from-add" data-meal="${meal}">Nouvel aliment</button>
     </div>
+    <div class="grid2">
+      <button class="btn" data-action="saved-meals" data-meal="${meal}">⭐ Mes repas${(state.meals || []).length ? ` (${state.meals.length})` : ''}</button>
+      <button class="btn" data-action="copy-prev" data-meal="${meal}" ${prevCount ? '' : 'disabled'}>Copier hier</button>
+    </div>
     <label>Rechercher dans mes aliments<input type="search" id="add-q" placeholder="skyr, poulet…" autocomplete="off"></label>
     <div class="list" id="add-list"></div>`);
   const list = $('#add-list'), input = $('#add-q');
-  const draw = () => {
-    const foods = searchFoods(state.foods, input.value);
-    list.innerHTML = foods.map((f) => `
+  const row = (f) => `
       <button type="button" class="item" data-action="pick" data-id="${esc(f.id)}" data-meal="${meal}">
         <span>${esc(f.name)}<br><span class="sub">${fmt(f.per100.kcal)} kcal · ${fmt(f.per100.prot)} g prot /100 g</span></span>
-      </button>`).join('') || '<div class="item"><span class="sub">Aucun résultat</span></div>';
+      </button>`;
+  const draw = () => {
+    const foods = searchFoods(state.foods, input.value);
+    const freq = input.value.trim() ? [] : recentFoods(state.entries, state.foods, todayISO());
+    const ids = new Set(freq.map((f) => f.id));
+    const rest = foods.filter((f) => !ids.has(f.id));
+    list.innerHTML = (freq.length ? `<div class="list-title">Fréquents</div>${freq.map(row).join('')}${rest.length ? '<div class="list-title">Tous les aliments</div>' : ''}` : '')
+      + rest.map(row).join('') || '<div class="item"><span class="sub">Aucun résultat</span></div>';
   };
   input.addEventListener('input', draw); draw();
+}
+
+/* ---------- Repas enregistrés et copie ---------- */
+const zoneOf = (foodId) => state.stock.filter((x) => x.foodId === foodId).sort((a, b) => ({ frigo: 0, placard: 1, congel: 2 })[a.zone] - ({ frigo: 0, placard: 1, congel: 2 })[b.zone])[0]?.zone || 'frigo';
+
+/** Ajoute un aliment au journal à une date ; retire du stock ce qui est disponible. */
+function addFoodEntry(food, grams, meal, on) {
+  const zone = zoneOf(food.id);
+  const deducted = stockOf(state.stock, food.id) > 0 ? deductStock(state.stock, food.id, grams).deducted : null;
+  state.entries.push({ id: uid(), date: on, meal, foodId: food.id, label: food.name, grams, deducted, zone, ...macrosFor(food.per100, grams) });
+}
+
+function savedMealTotals(m) {
+  return totals(m.items.map((i) => foodById(i.foodId)).map((f, k) => (f ? macrosFor(f.per100, m.items[k].grams) : emptyMacros())));
+}
+
+function sheetSaveMeal(mealId) {
+  const items = state.entries.filter((e) => e.date === date && e.meal === mealId && e.foodId && e.grams > 0);
+  const skipped = state.entries.filter((e) => e.date === date && e.meal === mealId).length - items.length;
+  const label = MEALS.find((m) => m.id === mealId).label;
+  openSheet(`
+    <header><h3>Enregistrer ce repas</h3><button class="icon-btn" data-action="close">Fermer</button></header>
+    <div class="muted small">${items.map((e) => `${esc(e.label)} ${fmt(e.grams)} g`).join(' · ')}</div>
+    ${skipped ? `<div class="small warn">${skipped} saisie${skipped > 1 ? 's' : ''} rapide${skipped > 1 ? 's' : ''} non incluse${skipped > 1 ? 's' : ''} : seuls les aliments de ta liste sont enregistrés.</div>` : ''}
+    <label>Nom du repas<input type="text" id="mn" value="${esc(label)}" autocomplete="off"></label>
+    <div id="merr" class="small" style="color:var(--danger)"></div>
+    <button class="btn primary block" id="msave">Enregistrer</button>`);
+  $('#msave').addEventListener('click', async () => {
+    const name = $('#mn').value.trim();
+    if (!name) { $('#merr').textContent = 'Donne un nom à ce repas.'; return; }
+    state.meals.push({ id: uid(), name: name.slice(0, 60), items: items.map((e) => ({ foodId: e.foodId, grams: e.grams })) });
+    await persist(); closeSheet(); render(); toast('Repas enregistré ⭐');
+  });
+}
+
+function sheetSavedMeals(meal) {
+  const list = state.meals || [];
+  openSheet(`
+    <header><h3>Mes repas</h3><button class="icon-btn" data-action="add" data-meal="${meal}">Retour</button></header>
+    ${list.length ? `<div class="list">${list.map((m) => { const t = savedMealTotals(m); return `
+      <button type="button" class="item" data-action="saved-open" data-id="${esc(m.id)}" data-meal="${meal}">
+        <span>${esc(m.name)}<br><span class="sub">${m.items.length} aliment${m.items.length > 1 ? 's' : ''} · ${t.kcal} kcal · ${fmt(t.prot)} g prot</span></span>
+      </button>`; }).join('')}</div>`
+      : '<div class="card muted">Aucun repas enregistré. Dans le Journal, touche ☆ à côté d\'un repas pour l\'enregistrer, puis ajoute-le en un geste.</div>'}`);
+}
+
+function sheetSavedMeal(id, meal) {
+  const m = (state.meals || []).find((x) => x.id === id); if (!m) return;
+  const t = savedMealTotals(m);
+  openSheet(`
+    <header><h3>${esc(m.name)}</h3><button class="icon-btn" data-action="saved-meals" data-meal="${meal}">Retour</button></header>
+    <div class="list">${m.items.map((i) => { const f = foodById(i.foodId); return `<div class="item"><span>${f ? esc(f.name) : '<i>aliment supprimé</i>'}<br><span class="sub">${fmt(i.grams)} g</span></span></div>`; }).join('')}</div>
+    <div class="muted">${t.kcal} kcal · ${fmt(t.prot)} g prot</div>
+    <button class="btn primary block" id="madd">Ajouter à ${esc(MEALS.find((x) => x.id === meal).label.toLowerCase())}</button>
+    <button class="btn danger block" id="mdel">Supprimer ce repas enregistré</button>`);
+  $('#madd').addEventListener('click', async () => {
+    let n = 0;
+    for (const i of m.items) { const f = foodById(i.foodId); if (f) { addFoodEntry(f, i.grams, meal, date); n++; } }
+    if (!n) { toast('Les aliments de ce repas ont été supprimés', 'error'); return; }
+    markNew(); await persist(); closeSheet(); render(); toast('Repas ajouté');
+  });
+  $('#mdel').addEventListener('click', async () => {
+    state.meals = state.meals.filter((x) => x.id !== id);
+    await persist(); sheetSavedMeals(meal); toast('Repas supprimé', 'remove');
+  });
+}
+
+async function copyPrevious(meal) {
+  const src = state.entries.filter((e) => e.date === shiftDate(date, -1) && e.meal === meal);
+  if (!src.length) return;
+  for (const e of src) {
+    const f = e.foodId ? foodById(e.foodId) : null;
+    if (f && e.grams > 0) addFoodEntry(f, e.grams, meal, date);
+    else state.entries.push({ ...e, id: uid(), date, deducted: null });
+  }
+  markNew(); await persist(); closeSheet(); render(); toast(`Repas d'hier copié (${src.length})`);
 }
 
 function sheetQuantity(foodId, meal) {
@@ -722,7 +1026,8 @@ function sheetQuantity(foodId, meal) {
     <div class="chips" id="portions">
       ${portions.map((p) => `<button type="button" class="chip" data-grams="${p.grams}">${esc(p.name)} · ${fmt(p.grams)} g</button>`).join('')}
     </div>
-    <label>Quantité (g)<input type="text" inputmode="decimal" id="qty" value="${portions[0] ? portions[0].grams : 100}" autocomplete="off"></label>
+    <label>Quantité (g)<input type="text" inputmode="decimal" id="qty" value="${lastGrams(state.entries, f.id) ?? (portions[0] ? portions[0].grams : 100)}" autocomplete="off"></label>
+    ${lastGrams(state.entries, f.id) != null ? '<div class="small muted" style="margin-top:-6px">Ta dernière quantité est pré-remplie.</div>' : ''}
     <div class="row between"><b id="preview"></b></div>
     ${inStock > 0 ? `<label style="flex-direction:row;align-items:center;gap:10px;color:var(--text);font-size:15px"><input type="checkbox" id="ded" checked style="width:22px;min-height:22px">Retirer du stock <span class="muted">(${fmt(inStock)} g disponibles)</span></label>` : ''}
     <button class="btn primary block" id="confirm">Ajouter</button>`);
@@ -779,14 +1084,14 @@ function sheetEntryMenu(id) {
   openSheet(`
     <header><h3>${esc(e.label)}</h3><button class="icon-btn" data-action="close">Fermer</button></header>
     <div class="muted">${e.grams ? fmt(e.grams) + ' g · ' : ''}${e.kcal} kcal · ${fmt(e.prot)} g prot</div>
-    <label>Déplacer vers
-      <select id="mv">${MEALS.map((m) => `<option value="${m.id}" ${m.id === e.meal ? 'selected' : ''}>${m.label}</option>`).join('')}</select>
-    </label>
     ${e.foodId && e.grams > 0 ? `
       <label>Quantité (g)<input type="text" inputmode="decimal" id="eg" value="${String(e.grams).replace('.', ',')}" autocomplete="off"></label>
       <div class="row between"><b id="epreview"></b></div>
       <div id="eerr" class="small" style="color:var(--danger)"></div>
       <button class="btn primary block" id="esave">Enregistrer la quantité</button>` : ''}
+    <label>Déplacer vers
+      <select id="mv">${MEALS.map((m) => `<option value="${m.id}" ${m.id === e.meal ? 'selected' : ''}>${m.label}</option>`).join('')}</select>
+    </label>
     ${e.foodId ? '' : '<button class="btn block" data-action="quick-edit" data-id="' + esc(e.id) + '">Modifier</button>'}
     <button class="btn danger block" id="del">Supprimer</button>`);
   if (e.foodId && e.grams > 0) {
@@ -954,6 +1259,21 @@ document.addEventListener('click', (e) => {
     'idea-add': () => logIdea(Number(el.dataset.i)),
     goal: sheetGoal,
     trophy: () => sheetTrophy(id),
+    wizard: () => openWizard(),
+    'apply-estimate': async () => {
+      const est = estimate(state.profile, latestWeight());
+      state.settings.kcal = est.kcal; state.settings.prot = est.prot;
+      await persist(); render(); toast('Budget mis à jour');
+    },
+    'save-meal': () => sheetSaveMeal(el.dataset.meal),
+    'saved-meals': () => sheetSavedMeals(meal),
+    'saved-open': () => sheetSavedMeal(id, meal),
+    'copy-prev': () => copyPrevious(meal),
+    'chart-range': () => { chartDays = Number(el.dataset.days); render(); },
+    'trophies-toggle': () => { showAllTrophies = !showAllTrophies; render(); if (showAllTrophies) $('#trophies-top')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+    'open-trophies': () => { tab = 'track'; showAllTrophies = false; render(true); window.scrollTo(0, 0); },
+    'goto-settings': () => { tab = 'settings'; render(true); window.scrollTo(0, 0); },
+    'nag-later': () => { ls.set('exportNagUntil', Date.now() + 3 * 864e5); render(); },
     'clean-seed': async () => {
       const del = seedCleanable();
       if (!del.length || !confirm(`Supprimer ${del.length} aliments d'exemple jamais utilisés ?`)) return;
@@ -1003,11 +1323,10 @@ async function init() {
   applyTheme();
   markDayAnnounced();
   render(true);
+  if (!state.settings.onboarded) openWizard({ first: true });
   setTimeout(checkProgress, 900);
   askPersistent();
   if (ls.get('syncDirty')) doSync();
   watchUpdates();
-  const last = localStorage.getItem('lastExport');
-  if (state.entries.length > 20 && (!last || Date.now() - new Date(last) > 14 * 864e5)) toast('Pense à exporter tes données (Réglages)', null);
 }
 init();

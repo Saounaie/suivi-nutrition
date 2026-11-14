@@ -35,12 +35,14 @@ async function idbSet(value) {
 export function freshState() {
   return {
     v: 1,
-    settings: { kcal: 1900, prot: 115, theme: 'dark', sounds: true, goalWeight: null, goalStart: null, tone: 'mix' },
+    settings: { kcal: 1900, prot: 115, theme: 'dark', sounds: true, goalWeight: null, goalStart: null, tone: 'mix', onboarded: false },
     foods: [],
     entries: [],
     stock: [],
     body: [],
     trophies: {},
+    meals: [],
+    profile: null,
   };
 }
 

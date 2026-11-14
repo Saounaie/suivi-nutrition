@@ -56,14 +56,15 @@ export function computeStats(state, today) {
 
   const goal = settings.goalWeight;
   const total = goal != null && startWeight != null ? startWeight - goal : 0;
-  const frac = (w) => (total > 0 && w != null ? Math.min(1, Math.max(0, (startWeight - w) / total)) : 0);
+  const frac = (w) => (total !== 0 && w != null ? Math.min(1, Math.max(0, (startWeight - w) / total)) : 0); // vaut aussi pour une prise de poids
+  const bestToward = avg.length ? (total < 0 ? Math.max(...avg.map((p) => p.value)) : bestAvg) : null; // meilleure moyenne dans le sens de l'objectif
 
   return {
     meals: entries.length, days: dates.length, log, budget, daysAway: last && !day.has(today) ? daysLeft(today, last) : null,
     okDays: okDays.length, solidWeek: perWeek(okDays), protDays: protDays.length, protWeek: perWeek(protDays),
     fiberMax: dates.length ? Math.max(...dates.map((d) => day.get(d).fiber)) : 0,
     weighIns: weights.length, waistCount: waists.length, weighWeeks: new Set(weights.map((w) => weekKey(w.date))).size,
-    startWeight, curAvg, lost, waistLost, goal: total > 0 ? goal : null, goalFrac: frac(curAvg), goalFracBest: frac(bestAvg),
+    startWeight, curAvg, lost, waistLost, goal: total !== 0 ? goal : null, goalFrac: frac(curAvg), goalFracBest: frac(bestToward),
     foodsScanned: foods.filter((f) => f.barcode).length, foodCount: foods.length, mealsFromStock: entries.filter((e) => e.deducted > 0).length,
   };
 }
@@ -285,6 +286,22 @@ export function weekRecap(state, today) {
   const trend = last && ref ? round1(last.value - ref.value) : null;
   const key = days === 0 ? 'weekEmpty' : ok >= 5 ? 'weekGreat' : days >= 5 ? 'weekGood' : 'weekStart';
   return { days, ok, protDays, trend, key };
+}
+
+/** Date estimée d'arrivée au poids cible d'après la tendance des 28 derniers jours (régression linéaire). null si la tendance ne va pas vers l'objectif ou si les pesées manquent. points = [{date, value}] */
+export function goalEta(points, goal, today) {
+  const from = shiftDate(today, -28);
+  const p = points.filter((x) => x.date >= from && x.date <= today).sort((a, b) => a.date.localeCompare(b.date));
+  if (p.length < 3) return null;
+  const t = p.map((x) => daysLeft(x.date, p[0].date));
+  if (t[t.length - 1] < 7) return null;
+  const n = p.length, mt = t.reduce((a, b) => a + b, 0) / n, mv = p.reduce((a, x) => a + x.value, 0) / n;
+  const den = t.reduce((a, x) => a + (x - mt) ** 2, 0);
+  const slope = t.reduce((a, x, i) => a + (x - mt) * (p[i].value - mv), 0) / den;
+  const now = mv + slope * (t[t.length - 1] - mt);
+  const d = slope ? (goal - now) / slope : NaN; // jours après la dernière pesée ; négatif si la tendance s'éloigne de l'objectif
+  if (!(d > 0) || d > 730) return null;
+  return { date: shiftDate(p[p.length - 1].date, Math.ceil(d)), perWeek: round1(slope * 7) };
 }
 
 /** Catégorie de message pour l'objectif de poids selon l'avancement (0 à 1). */

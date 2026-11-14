@@ -1,4 +1,5 @@
 // Logique pure (sans DOM, sans stockage) : testable avec `node --test`.
+import { cleanProfile } from './profile.js';
 
 export const MEALS = [
   { id: 'petit-dej', label: 'Petit-déjeuner' },
@@ -123,7 +124,14 @@ export function validateState(raw) {
     goalWeight: inRange(s.goalWeight, 30, 300),
     goalStart: inRange(s.goalStart, 30, 300),
     tone: ['mix', 'warm', 'fun'].includes(s.tone) ? s.tone : 'mix',
+    onboarded: s.onboarded === true,
   };
+  const meals = (Array.isArray(raw.meals) ? raw.meals : [])
+    .map((m) => ({
+      id: str(m.id, 60), name: str(m.name, 60),
+      items: (Array.isArray(m.items) ? m.items : []).map((i) => ({ foodId: str(i.foodId, 60), grams: num(i.grams) })).filter((i) => i.foodId && i.grams > 0),
+    }))
+    .filter((m) => m.id && m.name && m.items.length);
   const trophies = {};
   if (raw.trophies && typeof raw.trophies === 'object') {
     for (const [k, v] of Object.entries(raw.trophies)) if (/^[a-z0-9-]{1,40}$/.test(k) && /^\d{4}-\d{2}-\d{2}$/.test(v)) trophies[k] = v;
@@ -131,7 +139,33 @@ export function validateState(raw) {
   const body = (Array.isArray(raw.body) ? raw.body : [])
     .map((b) => ({ id: str(b.id, 60), date: /^\d{4}-\d{2}-\d{2}$/.test(b.date) ? b.date : null, weight: inRange(b.weight, 20, 400), waist: inRange(b.waist, 30, 250) }))
     .filter((b) => b.date && (b.weight != null || b.waist != null));
-  return { v: 1, settings, foods, entries, stock, body, trophies };
+  return { v: 1, settings, foods, entries, stock, body, trophies, meals, profile: cleanProfile(raw.profile) };
+}
+
+/** Aliments les plus utilisés ces 30 derniers jours (puis les plus récents), pour les proposer en premier. */
+export function recentFoods(entries, foods, today, max = 8) {
+  const from = shiftDate(today, -30);
+  const use = new Map();
+  for (const e of entries) {
+    if (!e.foodId || e.date < from) continue;
+    const u = use.get(e.foodId) || { count: 0, last: '' };
+    u.count++;
+    if (e.date > u.last) u.last = e.date;
+    use.set(e.foodId, u);
+  }
+  const byId = new Map(foods.map((f) => [f.id, f]));
+  return [...use]
+    .filter(([id]) => byId.has(id))
+    .sort((a, b) => b[1].count - a[1].count || b[1].last.localeCompare(a[1].last))
+    .slice(0, max)
+    .map(([id]) => byId.get(id));
+}
+
+/** Dernière quantité (g) notée pour un aliment, null s'il n'a jamais été utilisé. */
+export function lastGrams(entries, foodId) {
+  let best = null;
+  for (const e of entries) if (e.foodId === foodId && e.grams > 0 && (!best || e.date >= best.date)) best = e;
+  return best ? best.grams : null;
 }
 
 export function uid() {

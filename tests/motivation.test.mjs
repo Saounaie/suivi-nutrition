@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateState, shiftDate, weekOf } from '../js/logic.js';
-import { streaks, computeStats, TROPHIES, unlockedTrophies, trophyProgress, levelOf, LEVELS, MESSAGES, pickMessage, seedOf, situation, weekRecap, goalKey } from '../js/motivation.js';
+import { streaks, computeStats, TROPHIES, unlockedTrophies, trophyProgress, levelOf, LEVELS, MESSAGES, pickMessage, seedOf, situation, weekRecap, goalKey, goalEta } from '../js/motivation.js';
 
 const MON = '2026-11-09'; // un lundi
 const entry = (date, kcal = 1800, prot = 120, extra = {}) => ({ id: date + kcal, date, meal: 'dejeuner', label: 'x', kcal, prot, carbs: 0, sugars: 0, fat: 0, fiber: 0, ...extra });
@@ -116,12 +116,30 @@ test('objectif : progression, mi-chemin et atteint', () => {
   assert.ok(unlockedTrophies(s).includes('goal-done'));
 });
 
-test('objectif : un poids cible supérieur au départ est ignoré', () => {
+test('objectif : un poids cible égal au départ est ignoré', () => {
   const st = mkState({ body: [{ id: 'a', date: '2026-11-01', weight: 80 }] });
-  st.settings.goalWeight = 85;
+  st.settings.goalWeight = 80;
   const s = computeStats(st, '2026-11-02');
   assert.equal(s.goal, null);
   assert.equal(s.goalFrac, 0);
+});
+
+test('objectif : prise de poids, la progression va vers le haut', () => {
+  const st = mkState({ body: [{ id: 'a', date: '2026-11-01', weight: 70 }, { id: 'b', date: '2026-11-20', weight: 72 }] });
+  st.settings.goalWeight = 74;
+  const s = computeStats(st, '2026-11-20');
+  assert.equal(s.goalFrac, 0.5);
+  assert.ok(unlockedTrophies(s).includes('goal-half'));
+});
+
+test('goalEta : date estimée d\'après la tendance, null si elle s\'éloigne', () => {
+  const pts = [['2026-11-01', 90], ['2026-11-08', 89], ['2026-11-15', 88], ['2026-11-22', 87]].map(([date, value]) => ({ date, value }));
+  const eta = goalEta(pts, 80, '2026-11-22');
+  assert.equal(eta.perWeek, -1);
+  assert.equal(eta.date, '2027-01-10'); // 7 kg de plus au rythme de 1 kg par semaine
+  assert.equal(goalEta(pts, 95, '2026-11-22'), null); // objectif à l'opposé de la tendance
+  assert.equal(goalEta(pts.slice(0, 2), 80, '2026-11-22'), null); // pas assez de pesées
+  assert.equal(goalEta(pts.map((p) => ({ ...p, value: 88 })), 80, '2026-11-22'), null); // tendance plate
 });
 
 test('objectif : le poids de départ saisi remplace la première pesée', () => {
