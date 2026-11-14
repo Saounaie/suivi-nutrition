@@ -782,8 +782,41 @@ function sheetEntryMenu(id) {
     <label>Déplacer vers
       <select id="mv">${MEALS.map((m) => `<option value="${m.id}" ${m.id === e.meal ? 'selected' : ''}>${m.label}</option>`).join('')}</select>
     </label>
+    ${e.foodId && e.grams > 0 ? `
+      <label>Quantité (g)<input type="text" inputmode="decimal" id="eg" value="${String(e.grams).replace('.', ',')}" autocomplete="off"></label>
+      <div class="row between"><b id="epreview"></b></div>
+      <div id="eerr" class="small" style="color:var(--danger)"></div>
+      <button class="btn primary block" id="esave">Enregistrer la quantité</button>` : ''}
     ${e.foodId ? '' : '<button class="btn block" data-action="quick-edit" data-id="' + esc(e.id) + '">Modifier</button>'}
     <button class="btn danger block" id="del">Supprimer</button>`);
+  if (e.foodId && e.grams > 0) {
+    const food = foodById(e.foodId);
+    const macrosAt = (g) => (food ? macrosFor(food.per100, g) : Object.fromEntries(MACROS.map((k) => [k, k === 'kcal' ? Math.round((e[k] * g) / e.grams) : Math.round(((e[k] * g) / e.grams) * 10) / 10])));
+    const eg = $('#eg'), prev = $('#epreview');
+    const upd = () => {
+      const g = parseNumber(eg.value);
+      if (!(g > 0)) { prev.textContent = 'Quantité invalide'; return null; }
+      const m = macrosAt(g);
+      prev.textContent = `${m.kcal} kcal · ${fmt(m.prot)} g prot`;
+      return { g, m };
+    };
+    eg.addEventListener('input', upd); upd();
+    $('#esave').addEventListener('click', async () => {
+      const r = upd(); if (!r) { $('#eerr').textContent = 'Indique une quantité en grammes.'; return; }
+      const diff = Math.round((r.g - e.grams) * 10) / 10;
+      if (e.deducted > 0 && food) {
+        if (diff < 0) {
+          const back = Math.min(e.deducted, -diff);
+          addStock(state.stock, { foodId: e.foodId, grams: back, zone: e.zone || 'frigo' });
+          e.deducted = Math.round((e.deducted - back) * 10) / 10;
+        } else if (diff > 0) {
+          e.deducted = Math.round((e.deducted + deductStock(state.stock, e.foodId, diff).deducted) * 10) / 10;
+        }
+      }
+      Object.assign(e, r.m, { grams: r.g });
+      await persist(); closeSheet(); render(); toast('Quantité modifiée');
+    });
+  }
   $('#mv').addEventListener('change', async () => { e.meal = $('#mv').value; await persist(); closeSheet(); render(); });
   $('#del').addEventListener('click', async () => {
     const back = e.deducted > 0 && foodById(e.foodId);
