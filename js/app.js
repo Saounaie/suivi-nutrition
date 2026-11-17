@@ -1067,14 +1067,15 @@ function sheetQuick(meal, entry) {
       <label>Kcal<input type="text" inputmode="decimal" id="qk" value="${entry ? entry.kcal : ''}"></label>
       <label>Protéines (g)<input type="text" inputmode="decimal" id="qp" value="${entry ? String(entry.prot).replace('.', ',') : ''}"></label>
     </div>
+    <label>Fibres (g, facultatif)<input type="text" inputmode="decimal" id="qf" value="${entry && entry.fiber ? String(entry.fiber).replace('.', ',') : ''}"></label>
     <div id="qerr" class="small" style="color:var(--danger)"></div>
     <button class="btn primary block" id="confirm">${entry ? 'Enregistrer' : 'Ajouter'}</button>`);
   $('#confirm').addEventListener('click', async () => {
-    const k = parseNumber($('#qk').value), p = parseNumber($('#qp').value);
-    if (!(k >= 0) || Number.isNaN(p)) { $('#qerr').textContent = 'Kcal obligatoires (nombre). Protéines : nombre ou vide.'; return; }
+    const k = parseNumber($('#qk').value), p = parseNumber($('#qp').value), fb = parseNumber($('#qf').value);
+    if (!(k >= 0) || Number.isNaN(p) || Number.isNaN(fb)) { $('#qerr').textContent = 'Kcal obligatoires (nombre). Protéines et fibres : nombre ou vide.'; return; }
     const label = $('#ql').value.trim() || 'Repas';
-    if (entry) Object.assign(entry, { label, kcal: k, prot: p ?? 0 });
-    else state.entries.push({ id: uid(), date, meal, foodId: null, label, grams: null, kcal: k, prot: p ?? 0, carbs: 0, sugars: 0, fat: 0, fiber: 0 });
+    if (entry) Object.assign(entry, { label, kcal: k, prot: p ?? 0, fiber: fb ?? 0 });
+    else state.entries.push({ id: uid(), date, meal, foodId: null, label, grams: null, kcal: k, prot: p ?? 0, carbs: 0, sugars: 0, fat: 0, fiber: fb ?? 0 });
     if (!entry) markNew(); await persist(); closeSheet(); render(); toast(entry ? 'Modifié' : 'Ajouté');
   });
 }
