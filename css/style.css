@@ -297,3 +297,9 @@ body.wz-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; transition-duration: .01ms !important; }
 }
+
+/* Repas enregistrés : ligne aliment + quantité modifiable */
+.me-row { gap: 8px; }
+.me-row > span:first-child { flex: 1; min-width: 0; }
+.me-row .me-g { width: 76px; min-height: 44px; flex: none; text-align: right; padding: 0 10px; }
+.me-row .me-rm { color: var(--danger); flex: none; }

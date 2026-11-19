@@ -2,7 +2,7 @@ import {
   MEALS, MACROS, emptyMacros, macrosFor, totals, remaining, mealOfHour, parseNumber, todayISO, shiftDate,
   searchFoods, validateState, uid, dayStatus, weekOf, reconcileEntries,
   ZONES, addStock, deductStock, stockOf, daysLeft, findByBarcode, normalizeBarcode,
-  upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals, recentFoods, lastGrams,
+  upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals, recentFoods, lastGrams, cleanSavedMeal,
 } from './logic.js';
 import { GOALS, ACTIVITY, PACES, ageOf, validateProfile, estimate, weeksToGoal } from './profile.js';
 import { loadState, saveState, askPersistent } from './store.js';
@@ -21,6 +21,7 @@ let state;
 let tab = 'today';
 let date = todayISO();
 let query = '';
+let foodsView = 'foods'; // onglet Aliments : 'foods' ou 'meals' (repas enregistrés)
 
 const $ = (s) => document.querySelector(s);
 const view = $('#view');
@@ -231,10 +232,31 @@ function animateHero(left, C, target) {
 const seedCleanable = () => state.foods.filter((f) => isSeedFood(f)
   && !state.entries.some((e) => e.foodId === f.id) && !state.stock.some((x) => x.foodId === f.id));
 
+const foodsSeg = () => `<div class="seg" style="margin-top:14px">
+    <button type="button" data-action="foods-view" data-v="foods" class="${foodsView === 'foods' ? 'on' : ''}">Aliments</button>
+    <button type="button" data-action="foods-view" data-v="meals" class="${foodsView === 'meals' ? 'on' : ''}">⭐ Mes repas</button></div>`;
+
+/** Liste des repas enregistrés (⭐), modifiables. */
+function renderSavedMeals() {
+  const list = state.meals || [];
+  view.innerHTML = `
+    <div class="row between"><h1>Mes repas</h1><button class="btn primary" data-action="meal-new">+ Nouveau</button></div>
+    ${foodsSeg()}
+    <h2>${plural(list.length, 'repas enregistré')}</h2>
+    ${list.length ? `<div class="list">${list.map((m) => { const t = savedMealTotals(m); return `
+      <button type="button" class="item" data-action="meal-edit" data-id="${esc(m.id)}">
+        <span>${esc(m.name)}<br><span class="sub">${m.items.map((i) => `${esc(foodById(i.foodId)?.name ?? 'aliment supprimé')} ${fmt(i.grams)} g`).join(' · ')}<br>${t.kcal} kcal · ${fmt(t.prot)} g prot</span></span>
+        <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      </button>`; }).join('')}</div>`
+      : '<div class="card muted">Aucun repas enregistré. Crée-en un avec « + Nouveau », ou touche ☆ à côté d\'un repas dans le Journal.</div>'}`;
+}
+
 function renderFoods() {
+  if (foodsView === 'meals') { renderSavedMeals(); return; }
   const foods = searchFoods(state.foods, query);
   view.innerHTML = `
     <div class="row between"><h1>Aliments</h1><div class="row"><button class="btn" data-action="scan" data-mode="catalog">Scanner</button><button class="btn primary" data-action="food-new">+ Nouveau</button></div></div>
+    ${foodsSeg()}
     <label style="margin-top:14px">Rechercher<input type="search" id="q" value="${esc(query)}" placeholder="skyr, frites, code-barres…" autocomplete="off"></label>
     ${seedCleanable().length ? `<div class="alert"><b>${seedCleanable().length} aliment${seedCleanable().length > 1 ? 's' : ''} d'exemple</b> créé${seedCleanable().length > 1 ? 's' : ''} automatiquement par les premières versions.<br><button class="btn block" style="margin-top:10px" data-action="clean-seed">Les supprimer (ceux que tu n'as jamais utilisés)</button></div>` : ''}
     <h2>${foods.length} aliment${foods.length > 1 ? 's' : ''}</h2>
@@ -992,6 +1014,7 @@ function sheetSavedMeal(id, meal) {
     <div class="list">${m.items.map((i) => { const f = foodById(i.foodId); return `<div class="item"><span>${f ? esc(f.name) : '<i>aliment supprimé</i>'}<br><span class="sub">${fmt(i.grams)} g</span></span></div>`; }).join('')}</div>
     <div class="muted">${t.kcal} kcal · ${fmt(t.prot)} g prot</div>
     <button class="btn primary block" id="madd">Ajouter à ${esc(MEALS.find((x) => x.id === meal).label.toLowerCase())}</button>
+    <button class="btn block" data-action="meal-edit" data-id="${esc(m.id)}" data-meal="${meal}" data-from="add">Modifier ce repas</button>
     <button class="btn danger block" id="mdel">Supprimer ce repas enregistré</button>`);
   $('#madd').addEventListener('click', async () => {
     let n = 0;
@@ -1002,6 +1025,82 @@ function sheetSavedMeal(id, meal) {
   $('#mdel').addEventListener('click', async () => {
     state.meals = state.meals.filter((x) => x.id !== id);
     await persist(); sheetSavedMeals(meal); toast('Repas supprimé', 'remove');
+  });
+}
+
+/**
+ * Modifier (ou créer) un repas enregistré : nom, quantités, retirer/ajouter des aliments.
+ * Travaille sur une copie : rien n'est enregistré avant « Enregistrer ».
+ * fromMeal : si on vient de la feuille « Ajouter », on y revient après.
+ */
+function sheetMealEdit(id, fromMeal) {
+  const orig = id ? (state.meals || []).find((x) => x.id === id) : null;
+  if (id && !orig) return;
+  const draft = orig ? { id: orig.id, name: orig.name, items: orig.items.map((i) => ({ ...i, grams: String(i.grams).replace('.', ',') })) } : { id: null, name: '', items: [] };
+  const back = fromMeal ? `<button class="icon-btn" data-action="saved-open" data-id="${esc(id)}" data-meal="${fromMeal}">Retour</button>` : '<button class="icon-btn" data-action="close">Fermer</button>';
+  openSheet(`
+    <header><h3>${orig ? 'Modifier le repas' : 'Nouveau repas'}</h3>${back}</header>
+    <label>Nom du repas<input type="text" id="me-name" value="${esc(draft.name)}" placeholder="Carbos, burger frites…" autocomplete="off"></label>
+    <div class="list" id="me-items"></div>
+    <b id="me-total"></b>
+    <label>Ajouter un aliment<input type="search" id="me-q" placeholder="lardons, pâtes…" autocomplete="off"></label>
+    <div class="list" id="me-res" hidden></div>
+    <div id="me-err" class="small" style="color:var(--danger)"></div>
+    <button class="btn primary block" id="me-save">Enregistrer</button>
+    ${orig ? '<button class="btn danger block" id="me-del">Supprimer ce repas</button>' : ''}`);
+  const itemsEl = $('#me-items'), totalEl = $('#me-total'), q = $('#me-q'), res = $('#me-res');
+  const total = () => {
+    const t = totals(draft.items.map((i) => { const f = foodById(i.foodId), g = parseNumber(i.grams); return f && g > 0 ? macrosFor(f.per100, g) : emptyMacros(); }));
+    totalEl.textContent = `Total : ${t.kcal} kcal · ${fmt(t.prot)} g prot${t.fiber ? ` · ${fmt(t.fiber)} g fibres` : ''}`;
+  };
+  const drawItems = () => {
+    itemsEl.innerHTML = draft.items.map((i, k) => { const f = foodById(i.foodId); return `
+      <div class="item me-row">
+        <span>${f ? esc(f.name) : '<i>aliment supprimé</i>'}<br><span class="sub" data-sub="${k}"></span></span>
+        <input type="text" inputmode="decimal" class="me-g" data-k="${k}" value="${esc(i.grams)}" aria-label="Grammes">
+        <span class="small muted">g</span>
+        <button type="button" class="icon-btn me-rm" data-k="${k}" aria-label="Retirer">✕</button>
+      </div>`; }).join('') || '<div class="item"><span class="sub">Aucun aliment pour l\'instant</span></div>';
+    draft.items.forEach((_, k) => sub(k));
+    total();
+  };
+  const sub = (k) => {
+    const el = itemsEl.querySelector(`[data-sub="${k}"]`); if (!el) return;
+    const f = foodById(draft.items[k].foodId), g = parseNumber(draft.items[k].grams);
+    el.textContent = !f ? '' : g > 0 ? `${macrosFor(f.per100, g).kcal} kcal · ${fmt(macrosFor(f.per100, g).prot)} g prot` : 'Quantité invalide';
+  };
+  itemsEl.addEventListener('input', (e) => { const k = e.target.dataset.k; if (k == null) return; draft.items[k].grams = e.target.value; sub(k); total(); });
+  itemsEl.addEventListener('click', (e) => { const b = e.target.closest('.me-rm'); if (!b) return; draft.items.splice(Number(b.dataset.k), 1); sfx.remove(); drawItems(); });
+  const drawRes = () => {
+    const found = q.value.trim() ? searchFoods(state.foods, q.value).slice(0, 8) : [];
+    res.hidden = !q.value.trim();
+    res.innerHTML = found.map((f) => `<button type="button" class="item" data-fid="${esc(f.id)}"><span>${esc(f.name)}<br><span class="sub">${fmt(f.per100.kcal)} kcal · ${fmt(f.per100.prot)} g prot /100 g</span></span></button>`).join('')
+      || '<div class="item"><span class="sub">Aucun aliment trouvé</span></div>';
+  };
+  q.addEventListener('input', drawRes);
+  res.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-fid]'); if (!b) return;
+    const f = foodById(b.dataset.fid); if (!f) return;
+    draft.items.push({ foodId: f.id, grams: String(lastGrams(state.entries, f.id) ?? f.portions[0]?.grams ?? 100).replace('.', ',') });
+    q.value = ''; drawRes(); drawItems(); sfx.tap();
+  });
+  drawItems();
+  $('#me-save').addEventListener('click', async () => {
+    draft.name = $('#me-name').value;
+    const r = cleanSavedMeal(draft);
+    if (r.error) { $('#me-err').textContent = r.error; return; }
+    if (orig) Object.assign(orig, { name: r.meal.name, items: r.meal.items });
+    else state.meals.push({ ...r.meal, id: uid() });
+    await persist(); render();
+    if (fromMeal) sheetSavedMeal(orig.id, fromMeal); else closeSheet();
+    toast(orig ? 'Repas modifié' : 'Repas enregistré ⭐');
+  });
+  $('#me-del')?.addEventListener('click', async () => {
+    if (!confirm(`Supprimer « ${orig.name} » de tes repas enregistrés ?`)) return;
+    state.meals = state.meals.filter((x) => x.id !== orig.id);
+    await persist(); render();
+    if (fromMeal) sheetSavedMeals(fromMeal); else closeSheet();
+    toast('Repas supprimé', 'remove');
   });
 }
 
@@ -1269,6 +1368,9 @@ document.addEventListener('click', (e) => {
     'save-meal': () => sheetSaveMeal(el.dataset.meal),
     'saved-meals': () => sheetSavedMeals(meal),
     'saved-open': () => sheetSavedMeal(id, meal),
+    'foods-view': () => { foodsView = el.dataset.v; render(); },
+    'meal-new': () => sheetMealEdit(null),
+    'meal-edit': () => sheetMealEdit(id, el.dataset.from === 'add' ? meal : null),
     'copy-prev': () => copyPrevious(meal),
     'chart-range': () => { chartDays = Number(el.dataset.days); render(); },
     'trophies-toggle': () => { showAllTrophies = !showAllTrophies; render(); if (showAllTrophies) $('#trophies-top')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); },

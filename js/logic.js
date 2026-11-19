@@ -351,3 +351,21 @@ export function suggestMeals(stock, foods, kcalLeft, protLeft, max = 3) {
     .sort((a, b) => b.score - a.score || a.items.length - b.items.length);
   return scored.slice(0, max);
 }
+
+/**
+ * Valide un repas enregistré modifié (nom + aliments/grammes saisis en texte).
+ * Renvoie { meal } au format stocké ({ id, name, items: [{ foodId, grams }] }) ou { error }.
+ */
+export function cleanSavedMeal(draft) {
+  const name = String(draft?.name ?? '').trim().slice(0, 60);
+  if (!name) return { error: 'Donne un nom à ce repas.' };
+  const items = [];
+  for (const i of draft.items || []) {
+    if (!i.foodId) continue;
+    const g = typeof i.grams === 'number' ? i.grams : parseNumber(i.grams);
+    if (!(g > 0)) return { error: 'Chaque aliment doit avoir une quantité en grammes.' };
+    items.push({ foodId: String(i.foodId), grams: Math.round(g * 10) / 10 });
+  }
+  if (!items.length) return { error: 'Ajoute au moins un aliment.' };
+  return { meal: { id: draft.id, name, items } };
+}
