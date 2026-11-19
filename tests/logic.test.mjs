@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf, reconcileEntries, addStock, deductStock, stockOf, daysLeft, normalizeBarcode, findByBarcode, mapOffProduct, upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals } from '../js/logic.js';
+import { macrosFor, totals, remaining, parseNumber, shiftDate, searchFoods, validateState, mealOfHour, dayStatus, weekOf, reconcileEntries, addStock, deductStock, stockOf, daysLeft, normalizeBarcode, findByBarcode, mapOffProduct, upsertBody, movingAverage, weekStats, daysSinceMeasure, suggestMeals, cleanSavedMeal } from '../js/logic.js';
 
 test('macrosFor : 150 g de poulet à 110 kcal / 23 g prot', () => {
   const m = macrosFor({ kcal: 110, prot: 23 }, 150);
@@ -207,4 +207,21 @@ test('suggestMeals : respecte stock, kcal restantes et vise les protéines', () 
   assert.ok(r.every((m) => m.items.every((i) => i.food.id !== 'x' && i.food.id !== 'g')));
   assert.equal(r[0].items.length, 2);
   assert.deepEqual(suggestMeals(stock, foods, 100, 40), []);
+});
+
+test('cleanSavedMeal : renomme, convertit les grammes saisis, garde le format stocké', () => {
+  const r = cleanSavedMeal({ id: 'm1', name: '  Carbos  ', items: [{ foodId: 'a', grams: '100' }, { foodId: 'b', grams: '82,5' }, { foodId: 'c', grams: 200 }] });
+  assert.deepEqual(r, { meal: { id: 'm1', name: 'Carbos', items: [{ foodId: 'a', grams: 100 }, { foodId: 'b', grams: 82.5 }, { foodId: 'c', grams: 200 }] } });
+  // Le résultat passe tel quel la validation au chargement (données existantes intactes).
+  const s = validateState({ v: 1, foods: [], entries: [], meals: [r.meal] });
+  assert.deepEqual(s.meals, [r.meal]);
+});
+
+test('cleanSavedMeal : refuse nom vide, quantité invalide ou repas vide', () => {
+  assert.ok(cleanSavedMeal({ id: 'm', name: ' ', items: [{ foodId: 'a', grams: 10 }] }).error);
+  assert.ok(cleanSavedMeal({ id: 'm', name: 'X', items: [{ foodId: 'a', grams: '' }] }).error);
+  assert.ok(cleanSavedMeal({ id: 'm', name: 'X', items: [{ foodId: 'a', grams: '0' }] }).error);
+  assert.ok(cleanSavedMeal({ id: 'm', name: 'X', items: [{ foodId: 'a', grams: 'abc' }] }).error);
+  assert.ok(cleanSavedMeal({ id: 'm', name: 'X', items: [] }).error);
+  assert.equal(cleanSavedMeal({ id: 'm', name: 'x'.repeat(80), items: [{ foodId: 'a', grams: 5 }] }).meal.name.length, 60);
 });
