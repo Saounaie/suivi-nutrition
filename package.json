@@ -2,5 +2,5 @@
   "name": "suivi-nutrition",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node --test tests/logic.test.mjs tests/sync.test.mjs tests/motivation.test.mjs tests/profile.test.mjs tests/widget.test.mjs" }
+  "scripts": { "test": "node --test tests/logic.test.mjs tests/sync.test.mjs tests/motivation.test.mjs tests/profile.test.mjs tests/widget.test.mjs tests/muscu.test.mjs" }
 }
