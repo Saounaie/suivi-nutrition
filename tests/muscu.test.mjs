@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   freshState, validateState, ensureExercise, startSession, lastPerf, suggestedValue, nextSet,
-  itemTotal, remainingSets, suggestFor, isoWeek, sessionsThisWeek, exerciseHistory, remaining, fmtClock, fmtRest, todayISO,
+  itemTotal, remainingSets, suggestFor, mergeStates, isoWeek, sessionsThisWeek, exerciseHistory, remaining, fmtClock, fmtRest, todayISO,
 } from '../muscu/js/logic.js';
 import { pushSnapshot, fetchSnapshot, dataSize } from '../muscu/js/sync.js';
 
@@ -151,4 +151,24 @@ test('suggestFor : la dernière fois, sinon la série précédente de la séance
   assert.equal(suggestFor(null, cur, 1), 9);
   assert.equal(suggestFor(null, cur, 0), null);
   assert.equal(suggestFor({ sets: [{ value: 7, done: true }, { value: 6, done: true }] }, cur, 1), 6);
+});
+
+test('mergeStates : union par id, plus récent gagne, suppressions respectées, séance locale gardée', () => {
+  const mk = (t) => ({ ...freshState(), updatedAt: t });
+  const ex = (id, name) => ({ id, name, unit: 'reps' });
+  const a = mk(100); a.exercises = [ex('e1', 'Tractions')]; a.workouts = [{ id: 'wA', name: 'A (ordi)', items: [{ exId: 'e1', sets: 4, rest: 120, target: '' }] }];
+  const b = mk(200); b.exercises = [ex('e1', 'Tractions'), ex('e2', 'Dips')]; b.workouts = [{ id: 'wA', name: 'A', items: [{ exId: 'e1', sets: 3, rest: 90, target: '' }] }, { id: 'wB', name: 'B', items: [] }];
+  const m = mergeStates(a, b);
+  assert.deepEqual(m.workouts.map((w) => w.id).sort(), ['wA', 'wB']);
+  assert.equal(m.workouts.find((w) => w.id === 'wA').name, 'A', 'la copie la plus récente gagne');
+  assert.equal(m.exercises.length, 2);
+  assert.equal(m.updatedAt, 200);
+  b.deleted = ['wB']; a.workouts.push({ id: 'wB', name: 'B', items: [] });
+  assert.ok(!mergeStates(a, b).workouts.some((w) => w.id === 'wB'), 'suppression propagée');
+  const l = mk(300); l.exercises = [ex('e1', 'T')]; l.workouts = [{ id: 'w1', name: 'S', items: [{ exId: 'e1', sets: 1, rest: 0, target: '' }] }];
+  const s1 = startSession(l, 'w1'); l.timer = { endAt: Date.now() + 9000, total: 9, label: 'x' };
+  const m2 = mergeStates(l, mk(100));
+  assert.equal(m2.active, s1.id); assert.ok(m2.timer);
+  assert.equal(mergeStates(mk(100), l).sessions.length, 1);
+  assert.equal(validateState(JSON.parse(JSON.stringify(m2))).updatedAt, 300);
 });

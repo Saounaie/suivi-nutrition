@@ -31,6 +31,8 @@ export function freshState() {
     exercises: [],
     workouts: [],
     sessions: [],
+    deleted: [],
+    updatedAt: 0,
     active: null,
     timer: null,
   };
@@ -86,6 +88,8 @@ export function validateState(raw) {
       weeklyGoal: int(s.weeklyGoal, 1, 14, 2),
     },
     exercises, workouts, sessions, active, timer,
+    deleted: (Array.isArray(raw.deleted) ? raw.deleted : []).map((x) => str(x, 60)).filter(Boolean).slice(-500),
+    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Math.max(0, Number(raw.updatedAt)) : 0,
   };
 }
 
@@ -220,4 +224,30 @@ export function fmtRest(sec) {
 
 export function fmtValue(v, u) {
   return u === 'sec' ? `${v} s` : String(v);
+}
+
+/**
+ * Fusionne deux copies (appareil + dépôt) sans rien perdre : union par id, la copie la plus récente gagne
+ * quand un même élément existe des deux côtés. Les suppressions (`deleted`) sont respectées.
+ * `local` garde sa séance en cours et son chrono.
+ */
+export function mergeStates(local, remote) {
+  const newer = local.updatedAt >= remote.updatedAt ? local : remote;
+  const older = newer === local ? remote : local;
+  const deleted = [...new Set([...(older.deleted || []), ...(newer.deleted || [])])].slice(-500);
+  const gone = new Set(deleted);
+  const union = (k) => {
+    const m = new Map();
+    for (const x of older[k]) m.set(x.id, x);
+    for (const x of newer[k]) m.set(x.id, x);
+    return [...m.values()].filter((x) => !gone.has(x.id));
+  };
+  const out = {
+    ...newer,
+    exercises: union('exercises'), workouts: union('workouts'), sessions: union('sessions'),
+    deleted, updatedAt: Math.max(local.updatedAt, remote.updatedAt),
+    active: local.active, timer: local.timer,
+  };
+  if (!out.sessions.some((x) => x.id === out.active && !x.end)) { out.active = null; out.timer = null; }
+  return validateState(out);
 }
