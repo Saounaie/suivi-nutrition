@@ -123,3 +123,5 @@ body:not(.in-session) #timer { bottom: calc(92px + env(safe-area-inset-bottom));
 #toast.show { transform: translate(-50%, 0); }
 #toast.error { color: var(--danger); } #toast.success { color: var(--ok); }
 @media (max-width: 360px) { .set-row { grid-template-columns: 22px 48px 1fr 48px 56px; gap: 6px; } }
+
+.grid-2 { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }

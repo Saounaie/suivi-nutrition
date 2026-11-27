@@ -120,6 +120,7 @@ function render() {
   document.querySelectorAll('#tabs button').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
   if (view?.type === 'session') renderSession();
   else if (view?.type === 'workout') renderWorkoutEdit();
+  else if (view?.type === 'preview') renderPreview();
   else if (view?.type === 'exercise') renderExercise();
   else ({ home: renderHome, history: renderHistory, program: renderProgram, settings: renderSettings })[tab]();
   drawTimer(); syncWakeLock();
@@ -151,7 +152,8 @@ function renderHome() {
       <div class="card">
         <div class="hero-name">${esc(w.name)}</div>
         <div class="small muted" style="margin:4px 0 14px">${w.items.map((it) => esc(L.exById(state, it.exId)?.name)).join(' · ') || 'Aucun exercice'}</div>
-        <button class="btn primary block big-btn" data-action="start" data-id="${w.id}" ${w.items.length ? '' : 'disabled'}>Démarrer la séance</button>
+        <div class="grid-2"><button class="btn big-btn" data-action="preview" data-id="${w.id}">Voir</button>
+        <button class="btn primary big-btn" data-action="start" data-id="${w.id}" ${w.items.length ? '' : 'disabled'}>Démarrer</button></div>
       </div>`).join('') : ''}
     ${!state.workouts.length ? `<div class="card stack" style="margin-top:18px">
         <div class="hero-name">Bienvenue</div>
@@ -217,7 +219,7 @@ function renderSession() {
     <textarea id="sess-note" rows="2" placeholder="Forme du jour, douleurs, conditions…">${esc(s.note)}</textarea>
     <div class="stack" style="margin-top:18px">
       ${active ? `<button class="btn primary block big-btn" data-action="finish">Terminer la séance</button>` : ''}
-      <button class="btn danger block" data-action="delete-session">Supprimer cette séance</button>
+      ${active ? `<button class="btn danger block" data-action="cancel-session">Annuler la séance</button>` : `<button class="btn danger block" data-action="delete-session">Supprimer cette séance</button>`}
     </div>`;
   updateElapsed();
 }
@@ -228,6 +230,23 @@ function updateElapsed() {
   el.textContent = '⏱ ' + L.fmtClock((Date.now() - new Date(s.start)) / 1000).replace(/^(\d+):/, (m, a) => (a >= 60 ? `${Math.floor(a / 60)} h ${String(a % 60).padStart(2, '0')}:` : m));
 }
 setInterval(updateElapsed, 1000);
+
+function renderPreview() {
+  const w = state.workouts.find((x) => x.id === view.id);
+  if (!w) { view = null; return render(); }
+  main.innerHTML = `<div class="top-row"><button class="icon-btn" data-action="back">‹ Retour</button></div>
+    <h1>${esc(w.name)}</h1>
+    <p class="muted small" style="margin:6px 0 0">Aperçu : rien n'est enregistré tant que tu ne démarres pas.</p>
+    ${w.items.map((it, k) => {
+      const ex = L.exById(state, it.exId); const lp = L.lastPerf(state, it.exId);
+      return `<section class="card ex open"><div class="ex-head" style="cursor:default"><span class="ex-name">${k + 1}. ${esc(ex?.name)}</span>${it.target ? `<span class="pill">${esc(it.target)}</span>` : ''}</div>
+        <div class="small muted last">${it.sets} séries · récup ${L.fmtRest(it.rest)}${ex?.unit === 'sec' ? ' · en secondes' : ''}<br>${lp ? `Dernière fois (${dayFmt(lp.session.date)}) : <b>${L.doneValues(lp.item).map((v) => L.fmtValue(v, lp.item.unit)).join(' · ') || '—'}</b>${lp.item.comment ? `<br><i>« ${esc(lp.item.comment)} »</i>` : ''}` : 'Pas encore faite.'}</div></section>`;
+    }).join('') || '<p class="muted">Cette séance est vide.</p>'}
+    <div class="stack" style="margin-top:18px">
+      <button class="btn primary block big-btn" data-action="start" data-id="${w.id}" ${w.items.length && !state.active ? '' : 'disabled'}>${state.active ? 'Une séance est déjà en cours' : 'Démarrer la séance'}</button>
+      <button class="btn block" data-action="edit-workout" data-id="${w.id}">Modifier cette séance</button>
+    </div>`;
+}
 
 function renderHistory() {
   const list = L.sortedSessions(state);
@@ -474,7 +493,7 @@ function stepSet(i, j, d) {
 }
 
 const actions = {
-  start: (b) => { const s = L.startSession(state, b.dataset.id); openItem = null; persist(); askPersistent(); audio(); openView({ type: 'session', id: s.id }); },
+  start: (b) => { if (state.active) return toast('Une séance est déjà en cours', 'error'); const s = L.startSession(state, b.dataset.id); openItem = null; persist(); askPersistent(); audio(); openView({ type: 'session', id: s.id }); },
   'open-session': (b) => { openItem = null; openView({ type: 'session', id: b.dataset.id }); },
   'open-exercise': (b) => openView({ type: 'exercise', id: b.dataset.id }),
   back: () => { const from = view?.type; view = null; if (from === 'workout') tab = 'program'; render(); window.scrollTo(0, 0); },
@@ -490,6 +509,13 @@ const actions = {
     s.end = new Date().toISOString(); state.active = null; state.timer = null; goUntil = 0; openItem = null;
     await persist(); sfx.done(); toast('Séance enregistrée 💪', 'success'); view = null; tab = 'home'; render(); window.scrollTo(0, 0);
   },
+  'cancel-session': async () => {
+    const s = curSession(); const n = sessionSets(s);
+    if (!confirm(n ? `Annuler la séance ? Tes ${n} série(s) saisie(s) seront perdues. La séance type reste intacte.` : 'Annuler la séance ?')) return;
+    state.sessions = state.sessions.filter((x) => x.id !== s.id); state.deleted.push(s.id);
+    state.active = null; state.timer = null; goUntil = 0; openItem = null;
+    await persist(); view = null; tab = 'home'; render(); window.scrollTo(0, 0); toast('Séance annulée');
+  },
   'delete-session': async () => {
     if (!confirm('Supprimer définitivement cette séance ?')) return;
     const id = curSession().id; state.sessions = state.sessions.filter((x) => x.id !== id); state.deleted.push(id);
@@ -498,7 +524,8 @@ const actions = {
   },
   't-minus': () => adjustTimer(-15), 't-plus': () => adjustTimer(15), 't-skip': () => stopTimer(), 't-close': () => { goUntil = 0; drawTimer(); },
   'new-workout': () => { const w = { id: L.uid(), name: state.workouts.length ? 'Nouvelle séance' : 'Full body', items: [] }; state.workouts.push(w); persist(); tab = 'program'; openView({ type: 'workout', id: w.id }); },
-  'edit-workout': (b) => openView({ type: 'workout', id: b.dataset.id }),
+  'edit-workout': (b) => { tab = 'program'; openView({ type: 'workout', id: b.dataset.id }); },
+  preview: (b) => openView({ type: 'preview', id: b.dataset.id }),
   'w-add': (b) => { const sug = L.SUGGESTIONS.find((x) => x.name === b.dataset.name); addToWorkout(b.dataset.name, sug?.unit); },
   'w-add-custom': () => { const n = $('#w-new').value.trim(); if (!n) return toast('Écris le nom de l\'exercice', 'error'); addToWorkout(n, document.querySelector('#w-unit .on')?.dataset.unit); },
   'w-up': (b) => moveItem(Number(b.dataset.k), -1), 'w-down': (b) => moveItem(Number(b.dataset.k), 1),
