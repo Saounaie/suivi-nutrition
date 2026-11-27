@@ -19,3 +19,10 @@ Données produits : [Open Food Facts](https://world.openfoodfacts.org) (licence 
 ## Scan
 - Lecteur : [ZXing](https://github.com/zxing-js/library) 0.21.3 (licence dans `vendor/`), car Safari iOS n'a pas `BarcodeDetector`.
 - Un code déjà connu est retrouvé dans le catalogue local, sans appel réseau ; sinon requête Open Food Facts, puis fiche à vérifier avant enregistrement.
+
+## Appli Muscu (`muscu/`)
+Appli séparée (icône « Muscu ») pour le suivi des entraînements : séances types, séries, reps (ou secondes), chrono de récupération, commentaire par exercice et par séance, historique par semaine et progrès par exercice.
+- Adresse : `https://saounaie.github.io/suivi-nutrition/muscu/`, à ajouter à l'écran d'accueil depuis Safari.
+- Données à part : base IndexedDB `suivi-muscu`, service worker et caches `muscu-*` limités au dossier `muscu/`. L'appli nutrition n'y touche pas et inversement.
+- Synchro : fichier `muscu.json` dans le même dépôt privé que `data.json`.
+- À chaque déploiement de Muscu, incrémenter `VERSION` dans `muscu/sw.js` ET `APP_VERSION` dans `muscu/js/version.js`.

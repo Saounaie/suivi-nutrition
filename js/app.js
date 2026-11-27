@@ -651,6 +651,10 @@ function bindSyncSettings() {
     toast(r?.ok ? 'Synchronisation active' : (r?.message || 'Échec'), r?.ok ? 'success' : 'error');
     renderSettings();
   });
+  $('#sync-copy')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(ls.get('syncCfg')?.token || ''); toast('Jeton copié : colle-le dans Muscu › Réglages', 'success'); }
+    catch (_) { toast('Copie impossible sur cet appareil', 'error'); }
+  });
   $('#sync-off')?.addEventListener('click', () => {
     if (!confirm('Désactiver la synchronisation et effacer le jeton de cet appareil ? (Pense à le révoquer aussi sur GitHub.)')) return;
     ['syncCfg', 'syncStatus', 'syncDirty'].forEach(ls.del); syncSha = null; renderSettings();
@@ -890,6 +894,7 @@ function renderSettings() {
       <label>Jeton d'accès GitHub<input type="password" id="sync-token" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
       <button class="btn primary block" id="sync-save">Enregistrer et synchroniser</button>
       <div class="small" id="sync-info"></div>
+      ${ls.get('syncCfg')?.token ? '<button class="btn block" id="sync-copy">Copier le jeton pour l\'appli Muscu</button>' : ''}
       ${ls.get('syncCfg')?.token ? '<button class="btn danger block" id="sync-off">Désactiver et effacer le jeton</button>' : ''}
     </div>
     <h2>Application</h2>
