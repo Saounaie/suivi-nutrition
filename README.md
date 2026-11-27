@@ -24,5 +24,5 @@ Données produits : [Open Food Facts](https://world.openfoodfacts.org) (licence 
 Appli séparée (icône « Muscu ») pour le suivi des entraînements : séances types, séries, reps (ou secondes), chrono de récupération, commentaire par exercice et par séance, historique par semaine et progrès par exercice.
 - Adresse : `https://saounaie.github.io/suivi-nutrition/muscu/`, à ajouter à l'écran d'accueil depuis Safari.
 - Données à part : base IndexedDB `suivi-muscu`, service worker et caches `muscu-*` limités au dossier `muscu/`. L'appli nutrition n'y touche pas et inversement.
-- Synchro : fichier `muscu.json` dans le même dépôt privé que `data.json`.
+- Synchro bidirectionnelle : fichier `muscu.json` dans le même dépôt privé que `data.json`. Envoi après chaque changement ; récupération (ou fusion par id, suppressions respectées) à l’ouverture et au retour au premier plan, donc ordi et téléphone restent alignés.
 - À chaque déploiement de Muscu, incrémenter `VERSION` dans `muscu/sw.js` ET `APP_VERSION` dans `muscu/js/version.js`.

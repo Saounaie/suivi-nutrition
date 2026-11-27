@@ -22,7 +22,7 @@ function toast(msg, kind = '') {
 }
 
 let saveTimer = null;
-async function persist() { clearTimeout(saveTimer); await saveState(state); scheduleSync(); }
+async function persist() { clearTimeout(saveTimer); state.updatedAt = Date.now(); await saveState(state); scheduleSync(); }
 function persistSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(persist, 600); }
 
 /* ---------- Sons (Web Audio : coupés par le mode silencieux de l'iPhone) ---------- */
@@ -333,6 +333,29 @@ async function doSync() {
   else ls.set(K.status, { ok: false, at: new Date().toISOString(), message: r.message });
   showSyncInfo(); return r;
 }
+/** Récupère la copie du dépôt (écrite par un autre appareil) : adoptée si plus récente, fusionnée si on a des changements non envoyés. */
+let pulling = false;
+async function pullRemote() {
+  const cfg = ls.get(K.cfg);
+  if (!cfg?.token || !cfg?.repo || pulling || syncBusy) return;
+  pulling = true;
+  try {
+    const remote = await fetchSnapshot(cfg);
+    if (!remote.ok || !remote.state) return;
+    let rs; try { rs = L.validateState(remote.state); } catch (_) { return; }
+    const dirty = !!ls.get(K.dirty);
+    if (rs.updatedAt <= state.updatedAt) { if (dirty) doSync(); return; }
+    const editing = document.activeElement?.matches?.('input, textarea, select');
+    state = dirty ? L.mergeStates(state, rs) : { ...rs, active: state.active && rs.sessions.some((x) => x.id === state.active && !x.end) ? state.active : rs.active, timer: state.timer };
+    await saveState(state);
+    if (dirty) { await persist(); }
+    if (!state.active) state.timer = null;
+    if (view?.type === 'session' && !state.sessions.some((x) => x.id === view.id)) view = null;
+    if (!editing) render();
+    toast('Données mises à jour depuis l\'autre appareil');
+  } finally { pulling = false; }
+}
+
 function showSyncInfo() {
   const el = $('#sync-info'); if (!el) return;
   const cfg = ls.get(K.cfg), st = ls.get(K.status);
@@ -386,12 +409,8 @@ async function saveSync(tokenOverride) {
   const remote = await fetchSnapshot({ repo, token });
   if (!remote.ok) { $('#sync-info').textContent = remote.message; return toast(remote.message, 'error'); }
   if (remote.state) {
-    let rs = null; try { rs = L.validateState(remote.state); } catch (_) { /* illisible */ }
-    if (rs && dataSize(rs) > dataSize(state)) {
-      if (confirm(`La copie en ligne contient ${rs.sessions.length} séance(s) et ${rs.workouts.length} séance(s) type, contre ${state.sessions.length} / ${state.workouts.length} sur cet appareil.\n\nOK = restaurer la copie en ligne ici.\nAnnuler = ne pas restaurer.`)) {
-        state = rs; await saveState(state);
-      } else if (!confirm('Remplacer la copie en ligne par les données de cet appareil ?')) { $('#sync-info').textContent = 'Synchronisation non activée.'; return; }
-    }
+    let rs = null; try { rs = L.validateState(remote.state); } catch (_) { /* illisible : on ne fusionne pas */ }
+    if (rs && dataSize(rs) > 0) { state = dataSize(state) === 0 ? rs : L.mergeStates(state, rs); await saveState(state); }
   }
   ls.set(K.cfg, { repo, token });
   const r = await doSync();
@@ -473,7 +492,7 @@ const actions = {
   },
   'delete-session': async () => {
     if (!confirm('Supprimer définitivement cette séance ?')) return;
-    const id = curSession().id; state.sessions = state.sessions.filter((x) => x.id !== id);
+    const id = curSession().id; state.sessions = state.sessions.filter((x) => x.id !== id); state.deleted.push(id);
     if (state.active === id) { state.active = null; state.timer = null; }
     await persist(); view = null; render(); toast('Séance supprimée');
   },
@@ -485,7 +504,7 @@ const actions = {
   'w-up': (b) => moveItem(Number(b.dataset.k), -1), 'w-down': (b) => moveItem(Number(b.dataset.k), 1),
   'w-del': (b) => { curWorkout().items.splice(Number(b.dataset.k), 1); persist(); render(); },
   'w-sets': (b) => { const it = curWorkout().items[Number(b.dataset.k)]; it.sets = Math.min(20, Math.max(1, it.sets + Number(b.dataset.d))); persist(); render(); },
-  'w-remove': async () => { if (!confirm('Supprimer cette séance type ? (Les séances déjà faites sont gardées.)')) return; state.workouts = state.workouts.filter((w) => w.id !== view.id); await persist(); view = null; tab = 'program'; render(); },
+  'w-remove': async () => { if (!confirm('Supprimer cette séance type ? (Les séances déjà faites sont gardées.)')) return; state.deleted.push(view.id); state.workouts = state.workouts.filter((w) => w.id !== view.id); await persist(); view = null; tab = 'program'; render(); },
   toggle: (b) => { state.settings[b.dataset.key] = !state.settings[b.dataset.key]; persist(); render(); },
   'use-shared': () => saveSync(ls.get('syncCfg')?.token),
   'sync-save': () => saveSync(),
@@ -541,7 +560,7 @@ document.addEventListener('change', async (e) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { if (saveTimer) persist(); if (ls.get(K.dirty)) doSync(); }
-  else { drawTimer(); updateElapsed(); }
+  else { drawTimer(); updateElapsed(); pullRemote(); }
   syncWakeLock();
 });
 
@@ -558,7 +577,8 @@ async function init() {
   state = await loadState();
   if (state.active) { view = { type: 'session', id: state.active }; }
   render();
-  if (ls.get(K.dirty)) doSync();
+  if (ls.get(K.dirty)) await doSync();
+  await pullRemote();
   watchUpdates();
 }
 init();

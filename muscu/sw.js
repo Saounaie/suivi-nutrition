@@ -1,5 +1,5 @@
 // Cache hors ligne de l'appli Muscu (portée : dossier muscu/ uniquement). Incrémenter VERSION à chaque déploiement.
-const VERSION = 'muscu-m1';
+const VERSION = 'muscu-m2';
 const FILES = ['./', 'index.html', 'css/muscu.css', 'js/app.js', 'js/logic.js', 'js/store.js', 'js/sync.js', 'js/version.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png'];
 
 self.addEventListener('install', (e) => {
